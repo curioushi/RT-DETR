@@ -1,11 +1,15 @@
 """Copyright(c) 2023 lyuwenyu. All Rights Reserved.
 """
 
+import os
+import json
 import torch
 import torch.nn as nn 
 import torchvision.transforms as T
 
 import numpy as np 
+from tqdm import tqdm
+from glob import glob
 from PIL import Image, ImageDraw
 
 from src.core import YAMLConfig
@@ -56,21 +60,35 @@ def main(args, ):
             return outputs
 
     model = Model().to(args.device)
+    model.eval()
 
-    im_pil = Image.open(args.im_file).convert('RGB')
-    w, h = im_pil.size
-    orig_size = torch.tensor([w, h])[None].to(args.device)
+    im_files = sorted(glob(os.path.join(args.im_dir, '*.png')))
+    prediction = dict()
+    for im_file in tqdm(im_files):
+        im_pil = Image.open(im_file).convert('RGB')
+        w, h = im_pil.size
+        orig_size = torch.tensor([w, h])[None].to(args.device)
 
-    transforms = T.Compose([
-        T.Resize((640, 640)),
-        T.ToTensor(),
-    ])
-    im_data = transforms(im_pil)[None].to(args.device)
+        transforms = T.Compose([
+            T.Resize((640, 640)),
+            T.ToTensor(),
+        ])
+        im_data = transforms(im_pil)[None].to(args.device)
 
-    output = model(im_data, orig_size)
-    labels, boxes, scores = output
+        with torch.no_grad():
+            output = model(im_data, orig_size)
+        labels, boxes, scores = output
 
-    draw([im_pil], labels, boxes, scores)
+        prediction[os.path.basename(im_file)] = {
+            'boxes': boxes[0].cpu().numpy().tolist(),
+            'labels': labels[0].cpu().numpy().tolist(),
+            'scores': scores[0].cpu().numpy().tolist(),
+        }
+
+        # draw([im_pil], labels, boxes, scores)
+
+    with open('prediction.json', 'w') as f:
+        json.dump(prediction, f)
 
 
 if __name__ == '__main__':
@@ -78,7 +96,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-c', '--config', type=str, )
     parser.add_argument('-r', '--resume', type=str, )
-    parser.add_argument('-f', '--im-file', type=str, )
-    parser.add_argument('-d', '--device', type=str, default='cpu')
+    parser.add_argument('-i', '--im-dir', type=str, )
+    parser.add_argument('-d', '--device', type=str, default='cuda')
     args = parser.parse_args()
     main(args)
