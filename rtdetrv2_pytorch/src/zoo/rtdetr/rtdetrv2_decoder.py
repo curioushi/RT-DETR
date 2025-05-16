@@ -250,11 +250,13 @@ class TransformerDecoder(nn.Module):
                 memory_spatial_shapes,
                 bbox_head,
                 score_head,
+                normals_head,
                 query_pos_head,
                 attn_mask=None,
                 memory_mask=None):
         dec_out_bboxes = []
         dec_out_logits = []
+        dec_out_normals = []
         ref_points_detach = F.sigmoid(ref_points_unact)
 
         output = target
@@ -265,9 +267,13 @@ class TransformerDecoder(nn.Module):
             output = layer(output, ref_points_input, memory, memory_spatial_shapes, attn_mask, memory_mask, query_pos_embed)
 
             inter_ref_bbox = F.sigmoid(bbox_head[i](output) + inverse_sigmoid(ref_points_detach))
+            
+            predicted_normals = normals_head[i](output)
 
             if self.training:
                 dec_out_logits.append(score_head[i](output))
+                dec_out_normals.append(predicted_normals)
+
                 if i == 0:
                     dec_out_bboxes.append(inter_ref_bbox)
                 else:
@@ -276,12 +282,13 @@ class TransformerDecoder(nn.Module):
             elif i == self.eval_idx:
                 dec_out_logits.append(score_head[i](output))
                 dec_out_bboxes.append(inter_ref_bbox)
+                dec_out_normals.append(predicted_normals)
                 break
 
             ref_points = inter_ref_bbox
             ref_points_detach = inter_ref_bbox.detach()
 
-        return torch.stack(dec_out_bboxes), torch.stack(dec_out_logits)
+        return torch.stack(dec_out_bboxes), torch.stack(dec_out_logits), torch.stack(dec_out_normals)
 
 
 @register()
@@ -379,6 +386,9 @@ class RTDETRTransformerv2(nn.Module):
         self.dec_bbox_head = nn.ModuleList([
             MLP(hidden_dim, hidden_dim, 4, 3) for _ in range(num_layers)
         ])
+        self.dec_normals_head = nn.ModuleList([
+            MLP(hidden_dim, hidden_dim, 3, 3) for _ in range(num_layers)
+        ])
 
         # init encoder output anchors and valid_mask
         if self.eval_spatial_size:
@@ -398,6 +408,10 @@ class RTDETRTransformerv2(nn.Module):
             init.constant_(_cls.bias, bias)
             init.constant_(_reg.layers[-1].weight, 0)
             init.constant_(_reg.layers[-1].bias, 0)
+        
+        for _reg_norm in self.dec_normals_head:
+            init.constant_(_reg_norm.layers[-1].weight, 0)
+            init.constant_(_reg_norm.layers[-1].bias, 0)
         
         init.xavier_uniform_(self.enc_output[0].weight)
         if self.learn_query_content:
@@ -572,28 +586,31 @@ class RTDETRTransformerv2(nn.Module):
             self._get_decoder_input(memory, spatial_shapes, denoising_logits, denoising_bbox_unact)
 
         # decoder
-        out_bboxes, out_logits = self.decoder(
+        out_bboxes, out_logits, out_normals = self.decoder(
             init_ref_contents,
             init_ref_points_unact,
             memory,
             spatial_shapes,
             self.dec_bbox_head,
             self.dec_score_head,
+            self.dec_normals_head,
             self.query_pos_head,
             attn_mask=attn_mask)
 
         if self.training and dn_meta is not None:
             dn_out_bboxes, out_bboxes = torch.split(out_bboxes, dn_meta['dn_num_split'], dim=2)
             dn_out_logits, out_logits = torch.split(out_logits, dn_meta['dn_num_split'], dim=2)
+            dn_out_normals, out_normals = torch.split(out_normals, dn_meta['dn_num_split'], dim=2)
 
-        out = {'pred_logits': out_logits[-1], 'pred_boxes': out_bboxes[-1]}
+        out = {'pred_logits': out_logits[-1], 'pred_boxes': out_bboxes[-1], 'pred_normals': out_normals[-1]}
 
         if self.training and self.aux_loss:
-            out['aux_outputs'] = self._set_aux_loss(out_logits[:-1], out_bboxes[:-1])
+            out['aux_outputs'] = self._set_aux_loss(out_logits[:-1], out_bboxes[:-1], out_normals[:-1])
             out['enc_aux_outputs'] = self._set_aux_loss(enc_topk_logits_list, enc_topk_bboxes_list)
             out['enc_meta'] = {'class_agnostic': self.query_select_method == 'agnostic'}
 
             if dn_meta is not None:
+                # out['dn_aux_outputs'] = self._set_aux_loss(dn_out_logits, dn_out_bboxes, dn_out_normals)
                 out['dn_aux_outputs'] = self._set_aux_loss(dn_out_logits, dn_out_bboxes)
                 out['dn_meta'] = dn_meta
 
@@ -601,9 +618,13 @@ class RTDETRTransformerv2(nn.Module):
 
 
     @torch.jit.unused
-    def _set_aux_loss(self, outputs_class, outputs_coord):
+    def _set_aux_loss(self, outputs_class, outputs_coord, outputs_normal=None):
         # this is a workaround to make torchscript happy, as torchscript
         # doesn't support dictionary with non-homogeneous values, such
         # as a dict having both a Tensor and a list.
-        return [{'pred_logits': a, 'pred_boxes': b}
-                for a, b in zip(outputs_class, outputs_coord)]
+        if outputs_normal is not None:
+            return [{'pred_logits': a, 'pred_boxes': b, 'pred_normals': c}
+                    for a, b, c in zip(outputs_class, outputs_coord, outputs_normal)]
+        else:
+            return [{'pred_logits': a, 'pred_boxes': b}
+                    for a, b in zip(outputs_class, outputs_coord)]

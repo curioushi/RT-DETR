@@ -4,10 +4,10 @@ train_dataloader:
     transforms:
       ops:
         - {type: RandomPhotometricDistort, p: 0.5}
-        - {type: RandomZoomOut, fill: 0}
-        - {type: RandomIoUCrop, p: 0.8}
+        # - {type: RandomZoomOut, fill: 0}
+        # - {type: RandomIoUCrop, p: 0.8}
         - {type: SanitizeBoundingBoxes, min_size: 1}
-        - {type: RandomHorizontalFlip}
+        # - {type: RandomHorizontalFlip}
         - {type: Resize, size: [640, 640], }
         - {type: SanitizeBoundingBoxes, min_size: 1}
         - {type: ConvertPILImage, dtype: 'float32', scale: True}   
@@ -15,7 +15,8 @@ train_dataloader:
       policy:
         name: stop_epoch
         epoch: 71 # epoch in [71, ~) stop `ops`
-        ops: ['RandomPhotometricDistort', 'RandomZoomOut', 'RandomIoUCrop']
+        # ops: ['RandomPhotometricDistort', 'RandomZoomOut', 'RandomIoUCrop']
+        ops: ['RandomPhotometricDistort']
   
   collate_fn:
     type: BatchImageCollateFuncion
@@ -24,7 +25,7 @@ train_dataloader:
 
   shuffle: True
   total_batch_size: 4 # total batch size equals to 16 (4 * 4)
-  num_workers: 4
+  num_workers: 1
 
 
 val_dataloader:
@@ -35,4 +36,4 @@ val_dataloader:
         - {type: ConvertPILImage, dtype: 'float32', scale: True}   
   shuffle: False
   total_batch_size: 4
-  num_workers: 4
+  num_workers: 1

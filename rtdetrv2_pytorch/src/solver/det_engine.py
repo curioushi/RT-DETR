@@ -9,6 +9,10 @@ import sys
 import math
 from typing import Iterable
 
+import cv2
+import numpy as np
+from datetime import datetime
+
 import torch
 import torch.amp 
 from torch.utils.tensorboard import SummaryWriter
@@ -129,6 +133,83 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
         #     results = postprocessor['segm'](results, outputs, orig_target_sizes, target_sizes)
 
         res = {target['image_id'].item(): output for target, output in zip(targets, results)}
+
+        for sample, target, output in zip(samples, targets, results):
+            if target['image_id'].item() == 4:
+                # 1. Convert sample to OpenCV format (H, W, C), BGR, 0-255
+                img_tensor_cpu = sample.cpu().detach() # Should be (C, H, W) and range [0,1]
+                img_numpy_chw = img_tensor_cpu.numpy()
+                # Transpose C, H, W to H, W, C
+                img_numpy_hwc_rgb = np.transpose(img_numpy_chw, (1, 2, 0))
+                
+                # Scale 0-1 to 0-255 and clip for safety
+                # Ensure the image is contiguous in memory after transpose for cvtColor
+                img_numpy_hwc_rgb_contiguous = np.ascontiguousarray(img_numpy_hwc_rgb)
+                img_to_save = (np.clip(img_numpy_hwc_rgb_contiguous, 0, 1) * 255).astype(np.uint8)
+                
+                # Convert RGB to BGR for OpenCV
+                img_bgr = cv2.cvtColor(img_to_save, cv2.COLOR_RGB2BGR)
+
+                img_gt_vis = img_bgr.copy()
+                img_pred_vis = img_bgr.copy()
+
+                image_id_val = target['image_id'].item()
+
+                # 2. Draw Ground Truth boxes
+                gt_boxes_tensor = target['boxes'] 
+                gt_normals_tensor = target['normals']
+
+                gt_boxes_np = gt_boxes_tensor.cpu().numpy()
+                gt_normals_np = gt_normals_tensor.cpu().numpy()
+
+                for i in range(gt_boxes_np.shape[0]):
+                    box = gt_boxes_np[i] # [xmin, ymin, xmax, ymax]
+                    normal = gt_normals_np[i] # (nx, ny, nz), assumed R, G, B order
+                    normal[1] *= -1
+                    normal[2] *= -1
+
+                    # Color from normal: (normal_component + 1) / 2 * 255
+                    # Components assumed to be in [-1, 1]
+                    color_r = int(((normal[0] + 1) / 2) * 255)
+                    color_g = int(((normal[1] + 1) / 2) * 255)
+                    color_b = int(((normal[2] + 1) / 2) * 255)
+                    draw_color_bgr = (color_b, color_g, color_r) # OpenCV uses BGR
+
+                    xmin, ymin, xmax, ymax = int(box[0]), int(box[1]), int(box[2]), int(box[3])
+                    cv2.rectangle(img_gt_vis, (xmin, ymin), (xmax, ymax), draw_color_bgr, 2)
+
+                filename_gt = f"image_{image_id_val}_gt.png"
+                cv2.imwrite(filename_gt, img_gt_vis)
+
+                # 3. Draw Prediction boxes (score > 0.6)
+                pred_boxes_tensor = output['boxes']
+                pred_scores_tensor = output['scores']
+                pred_normals_tensor = output['normals']
+
+                pred_boxes_np = pred_boxes_tensor.cpu().detach().numpy() / 1024 * 640
+                pred_scores_np = pred_scores_tensor.cpu().detach().numpy()
+                pred_normals_np = pred_normals_tensor.cpu().detach().numpy()
+                
+                
+                score_thresh = 0.6
+                for i in range(pred_boxes_np.shape[0]):
+                    if pred_scores_np[i] > score_thresh:
+                        box = pred_boxes_np[i]
+                        normal = pred_normals_np[i] # Assumed R, G, B order
+                        normal[1] *= -1
+                        normal[2] *= -1
+
+                        color_r = int(((normal[0] + 1) / 2) * 255)
+                        color_g = int(((normal[1] + 1) / 2) * 255)
+                        color_b = int(((normal[2] + 1) / 2) * 255)
+                        draw_color_bgr = (color_b, color_g, color_r) # BGR
+
+                        xmin, ymin, xmax, ymax = int(box[0]), int(box[1]), int(box[2]), int(box[3])
+                        cv2.rectangle(img_pred_vis, (xmin, ymin), (xmax, ymax), draw_color_bgr, 2)
+                
+                filename_pred = f"image_{image_id_val}_pred_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+                cv2.imwrite(filename_pred, img_pred_vis)
+
         if coco_evaluator is not None:
             coco_evaluator.update(res)
 

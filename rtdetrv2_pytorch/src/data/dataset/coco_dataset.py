@@ -134,6 +134,12 @@ class ConvertCocoPolysToMask(object):
             
         labels = torch.tensor(labels, dtype=torch.int64)
 
+        # Extract normals if present
+        custom_normals = None
+        if anno and "normal" in anno[0]: # Check if normal data exists
+            custom_normals = [obj["normal"] for obj in anno]
+            custom_normals = torch.as_tensor(custom_normals, dtype=torch.float32).reshape(-1, 3)
+
         if self.return_masks:
             segmentations = [obj["segmentation"] for obj in anno]
             masks = convert_coco_poly_to_mask(segmentations, h, w)
@@ -153,6 +159,8 @@ class ConvertCocoPolysToMask(object):
             masks = masks[keep]
         if keypoints is not None:
             keypoints = keypoints[keep]
+        if custom_normals is not None:
+            custom_normals = custom_normals[keep]
 
         target = {}
         target["boxes"] = boxes
@@ -162,6 +170,8 @@ class ConvertCocoPolysToMask(object):
         target["image_id"] = image_id
         if keypoints is not None:
             target["keypoints"] = keypoints
+        if custom_normals is not None:
+            target["normals"] = custom_normals
 
         # for conversion to coco api
         area = torch.tensor([obj["area"] for obj in anno])
