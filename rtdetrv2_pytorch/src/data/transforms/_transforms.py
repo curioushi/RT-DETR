@@ -140,3 +140,57 @@ class ConvertPILImage(T.Transform):
 
     def transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
         return self._transform(inpt, params)
+
+
+@register()
+class NormalizeCoords(T.Transform):
+    def __init__(self) -> None:
+        super().__init__()
+        # This transform does not use _transformed_types for automatic dispatch,
+        # as it needs both image (for size) and target (for 'coords').
+        # It overrides forward to handle (image, target, dataset_instance) tuple.
+        self._transformed_types = () 
+
+    def forward(self, inputs: Any) -> Any:
+        if len(inputs) == 1:
+            return inputs[0]
+
+        assert len(inputs) == 3
+
+        image, target, dataset = inputs
+        # Check if 'coords' exists, is not None, and is not an empty tensor
+        if 'coords' not in target or target['coords'] is None or target['coords'].numel() == 0:
+            return image, target, dataset
+
+        coords = target['coords']
+        
+        # image is expected to be a tensor-like object (torch.Tensor or tv_tensors.Image)
+        # F.get_spatial_size(image) returns [H, W]
+        w, h = target['orig_size']
+        
+        # Ensure coords has at least 2 dimensions (e.g., [num_coords, 8])
+        # coords.shape[-1] is the number of coordinate values (e.g., 8 for 4 (x,y) points)
+        num_coord_values = coords.shape[-1]
+        
+        if num_coord_values % 2 != 0:
+            # This indicates an unexpected format (not pairs of x,y).
+            # Depending on strictness, one might raise an error or log a warning.
+            # For now, we assume it's pairs and proceed.
+            # Consider adding a warning if this case is possible and problematic.
+            pass
+            
+        # Normalization factor for coords (e.g., x1,y1,x2,y2...) should be [W,H,W,H,...]
+        # Each x is divided by W, each y by H.
+        normalization_factor = torch.tensor(
+            [w, h] * (num_coord_values // 2),
+            dtype=coords.dtype, 
+            device=coords.device
+        )
+        
+        # If coords is (N, 8) and normalization_factor is (8), broadcasting applies correctly.
+        coords = coords / normalization_factor
+        center = target['boxes'][:, :2]
+        coords = (coords.reshape(-1, 4, 2) - center.reshape(-1, 1, 2)).reshape(-1, 8)
+        target['coords'] = coords
+        
+        return image, target, dataset

@@ -250,11 +250,13 @@ class TransformerDecoder(nn.Module):
                 memory_spatial_shapes,
                 bbox_head,
                 score_head,
+                quad_head,
                 query_pos_head,
                 attn_mask=None,
                 memory_mask=None):
         dec_out_bboxes = []
         dec_out_logits = []
+        dec_out_quads = []
         ref_points_detach = F.sigmoid(ref_points_unact)
 
         output = target
@@ -266,8 +268,11 @@ class TransformerDecoder(nn.Module):
 
             inter_ref_bbox = F.sigmoid(bbox_head[i](output) + inverse_sigmoid(ref_points_detach))
 
+            predicted_quads = quad_head[i](output)
+
             if self.training:
                 dec_out_logits.append(score_head[i](output))
+                dec_out_quads.append(predicted_quads)
                 if i == 0:
                     dec_out_bboxes.append(inter_ref_bbox)
                 else:
@@ -276,12 +281,13 @@ class TransformerDecoder(nn.Module):
             elif i == self.eval_idx:
                 dec_out_logits.append(score_head[i](output))
                 dec_out_bboxes.append(inter_ref_bbox)
+                dec_out_quads.append(predicted_quads)
                 break
 
             ref_points = inter_ref_bbox
             ref_points_detach = inter_ref_bbox.detach()
 
-        return torch.stack(dec_out_bboxes), torch.stack(dec_out_logits)
+        return torch.stack(dec_out_bboxes), torch.stack(dec_out_logits), torch.stack(dec_out_quads)
 
 
 @register()
@@ -379,6 +385,9 @@ class RTDETRTransformerv2(nn.Module):
         self.dec_bbox_head = nn.ModuleList([
             MLP(hidden_dim, hidden_dim, 4, 3) for _ in range(num_layers)
         ])
+        self.dec_quad_head = nn.ModuleList([
+            MLP(hidden_dim, hidden_dim, 8, 3) for _ in range(num_layers)
+        ])
 
         # init encoder output anchors and valid_mask
         if self.eval_spatial_size:
@@ -398,6 +407,10 @@ class RTDETRTransformerv2(nn.Module):
             init.constant_(_cls.bias, bias)
             init.constant_(_reg.layers[-1].weight, 0)
             init.constant_(_reg.layers[-1].bias, 0)
+        
+        for _quad in self.dec_quad_head:
+            init.constant_(_quad.layers[-1].weight, 0)
+            init.constant_(_quad.layers[-1].bias, 0)
         
         init.xavier_uniform_(self.enc_output[0].weight)
         if self.learn_query_content:
@@ -572,24 +585,26 @@ class RTDETRTransformerv2(nn.Module):
             self._get_decoder_input(memory, spatial_shapes, denoising_logits, denoising_bbox_unact)
 
         # decoder
-        out_bboxes, out_logits = self.decoder(
+        out_bboxes, out_logits, out_quads = self.decoder(
             init_ref_contents,
             init_ref_points_unact,
             memory,
             spatial_shapes,
             self.dec_bbox_head,
             self.dec_score_head,
+            self.dec_quad_head,
             self.query_pos_head,
             attn_mask=attn_mask)
 
         if self.training and dn_meta is not None:
             dn_out_bboxes, out_bboxes = torch.split(out_bboxes, dn_meta['dn_num_split'], dim=2)
             dn_out_logits, out_logits = torch.split(out_logits, dn_meta['dn_num_split'], dim=2)
+            dn_out_quads, out_quads = torch.split(out_quads, dn_meta['dn_num_split'], dim=2)
 
-        out = {'pred_logits': out_logits[-1], 'pred_boxes': out_bboxes[-1]}
+        out = {'pred_logits': out_logits[-1], 'pred_boxes': out_bboxes[-1], 'pred_quads': out_quads[-1]}
 
         if self.training and self.aux_loss:
-            out['aux_outputs'] = self._set_aux_loss(out_logits[:-1], out_bboxes[:-1])
+            out['aux_outputs'] = self._set_aux_loss(out_logits[:-1], out_bboxes[:-1], out_quads[:-1])
             out['enc_aux_outputs'] = self._set_aux_loss(enc_topk_logits_list, enc_topk_bboxes_list)
             out['enc_meta'] = {'class_agnostic': self.query_select_method == 'agnostic'}
 
@@ -601,9 +616,13 @@ class RTDETRTransformerv2(nn.Module):
 
 
     @torch.jit.unused
-    def _set_aux_loss(self, outputs_class, outputs_coord):
+    def _set_aux_loss(self, outputs_class, outputs_coord, outputs_quad=None):
         # this is a workaround to make torchscript happy, as torchscript
         # doesn't support dictionary with non-homogeneous values, such
         # as a dict having both a Tensor and a list.
-        return [{'pred_logits': a, 'pred_boxes': b}
-                for a, b in zip(outputs_class, outputs_coord)]
+        if outputs_quad is None:
+            return [{'pred_logits': a, 'pred_boxes': b}
+                    for a, b in zip(outputs_class, outputs_coord)]
+        else:
+            return [{'pred_logits': a, 'pred_boxes': b, 'pred_quads': c}
+                    for a, b, c in zip(outputs_class, outputs_coord, outputs_quad)]

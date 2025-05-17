@@ -18,8 +18,8 @@ train_dataloader:
   type: DataLoader
   dataset: 
     type: CocoDetection
-    img_folder: ./dataset/bproc-container-02/images
-    ann_file: ./dataset/bproc-container-02/annotations.json
+    img_folder: ./dataset/bproc-container-03/images
+    ann_file: ./dataset/bproc-container-03/annotations.json
     return_masks: False
     transforms:
       type: Compose
@@ -35,8 +35,8 @@ val_dataloader:
   type: DataLoader
   dataset: 
     type: CocoDetection
-    img_folder: ./dataset/bproc-container-02/images
-    ann_file: ./dataset/bproc-container-02/annotations.json
+    img_folder: ./dataset/bproc-container-03/images
+    ann_file: ./dataset/bproc-container-03/annotations.json
     return_masks: False
     transforms:
       type: Compose

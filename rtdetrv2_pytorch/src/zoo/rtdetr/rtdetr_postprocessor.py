@@ -46,7 +46,7 @@ class RTDETRPostProcessor(nn.Module):
     
     # def forward(self, outputs, orig_target_sizes):
     def forward(self, outputs, orig_target_sizes: torch.Tensor):
-        logits, boxes = outputs['pred_logits'], outputs['pred_boxes']
+        logits, boxes, quads = outputs['pred_logits'], outputs['pred_boxes'], outputs['pred_quads']
         # orig_target_sizes = torch.stack([t["orig_size"] for t in targets], dim=0)        
 
         bbox_pred = torchvision.ops.box_convert(boxes, in_fmt='cxcywh', out_fmt='xyxy')
@@ -60,6 +60,7 @@ class RTDETRPostProcessor(nn.Module):
             labels = mod(index, self.num_classes)
             index = index // self.num_classes
             boxes = bbox_pred.gather(dim=1, index=index.unsqueeze(-1).repeat(1, 1, bbox_pred.shape[-1]))
+            quads = quads.gather(dim=1, index=index.unsqueeze(-1).repeat(1, 1, quads.shape[-1]))
             
         else:
             scores = F.softmax(logits)[:, :, :-1]
@@ -68,10 +69,11 @@ class RTDETRPostProcessor(nn.Module):
                 scores, index = torch.topk(scores, self.num_top_queries, dim=-1)
                 labels = torch.gather(labels, dim=1, index=index)
                 boxes = torch.gather(boxes, dim=1, index=index.unsqueeze(-1).tile(1, 1, boxes.shape[-1]))
+                quads = torch.gather(quads, dim=1, index=index.unsqueeze(-1).tile(1, 1, quads.shape[-1]))
         
         # TODO for onnx export
         if self.deploy_mode:
-            return labels, boxes, scores
+            return labels, boxes, scores, quads
 
         # TODO
         if self.remap_mscoco_category:
@@ -80,8 +82,8 @@ class RTDETRPostProcessor(nn.Module):
                 .to(boxes.device).reshape(labels.shape)
 
         results = []
-        for lab, box, sco in zip(labels, boxes, scores):
-            result = dict(labels=lab, boxes=box, scores=sco)
+        for lab, box, sco, quad in zip(labels, boxes, scores, quads):
+            result = dict(labels=lab, boxes=box, scores=sco, quads=quad)
             results.append(result)
         
         return results

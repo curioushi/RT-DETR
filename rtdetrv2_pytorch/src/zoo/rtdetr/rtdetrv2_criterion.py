@@ -114,6 +114,16 @@ class RTDETRCriterionv2(nn.Module):
         loss_giou = loss_giou if boxes_weight is None else loss_giou * boxes_weight
         losses['loss_giou'] = loss_giou.sum() / num_boxes
         return losses
+    
+    def loss_quads(self, outputs, targets, indices, num_boxes, **kwargs):
+        assert 'pred_quads' in outputs
+        idx = self._get_src_permutation_idx(indices)
+        src_quads = outputs['pred_quads'][idx]
+        target_quads = torch.cat([t['coords'][i] for t, (_, i) in zip(targets, indices)], dim=0)
+        
+        loss = F.l1_loss(src_quads, target_quads, reduction='none')
+        loss = loss.sum() / num_boxes
+        return {'loss_quads': loss}
 
     def _get_src_permutation_idx(self, indices):
         # permute predictions following indices
@@ -132,6 +142,7 @@ class RTDETRCriterionv2(nn.Module):
             'boxes': self.loss_boxes,
             'focal': self.loss_labels_focal,
             'vfl': self.loss_labels_vfl,
+            'quads': self.loss_quads,
         }
         assert loss in loss_map, f'do you really want to compute {loss} loss?'
         return loss_map[loss](outputs, targets, indices, num_boxes, **kwargs)
@@ -184,6 +195,8 @@ class RTDETRCriterionv2(nn.Module):
             dn_num_boxes = num_boxes * outputs['dn_meta']['dn_num_group']
             for i, aux_outputs in enumerate(outputs['dn_aux_outputs']):
                 for loss in self.losses:
+                    if loss in ['quads']:
+                        continue
                     meta = self.get_loss_meta_info(loss, aux_outputs, targets, indices)
                     l_dict = self.get_loss(loss, aux_outputs, targets, indices, dn_num_boxes, **meta)
                     l_dict = {k: l_dict[k] * self.weight_dict[k] for k in l_dict if k in self.weight_dict}
@@ -207,6 +220,8 @@ class RTDETRCriterionv2(nn.Module):
                 matched = self.matcher(aux_outputs, targets)
                 indices = matched['indices']
                 for loss in self.losses:
+                    if loss in ['quads']:
+                        continue
                     meta = self.get_loss_meta_info(loss, aux_outputs, enc_targets, indices)
                     l_dict = self.get_loss(loss, aux_outputs, enc_targets, indices, num_boxes, **meta)
                     l_dict = {k: l_dict[k] * self.weight_dict[k] for k in l_dict if k in self.weight_dict}

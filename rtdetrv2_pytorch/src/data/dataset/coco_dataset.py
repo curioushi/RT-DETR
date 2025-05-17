@@ -38,7 +38,13 @@ class CocoDetection(torchvision.datasets.CocoDetection, DetDataset):
     def __getitem__(self, idx):
         img, target = self.load_item(idx)
         if self._transforms is not None:
+            before_boxes_shape = target['boxes'].shape
+            before_coords_shape = target['coords'].shape
             img, target, _ = self._transforms(img, target, self)
+            after_boxes_shape = target['boxes'].shape
+            after_coords_shape = target['coords'].shape
+            # print(f'boxes: {before_boxes_shape[0]} -> {after_boxes_shape[0]}, coords: {before_coords_shape[0]} -> {after_coords_shape[0]}')
+            assert after_boxes_shape[0] == after_coords_shape[0]
         return img, target
 
     def load_item(self, idx):
@@ -134,6 +140,11 @@ class ConvertCocoPolysToMask(object):
             
         labels = torch.tensor(labels, dtype=torch.int64)
 
+        # Extract quads if present
+        if anno and "coords" in anno[0]: # Check if normal data exists
+            custom_coords = [obj["coords"] for obj in anno]
+            custom_coords = torch.as_tensor(custom_coords, dtype=torch.float32).reshape(-1, 8)
+
         if self.return_masks:
             segmentations = [obj["segmentation"] for obj in anno]
             masks = convert_coco_poly_to_mask(segmentations, h, w)
@@ -153,6 +164,8 @@ class ConvertCocoPolysToMask(object):
             masks = masks[keep]
         if keypoints is not None:
             keypoints = keypoints[keep]
+        if custom_coords is not None:
+            custom_coords = custom_coords[keep]
 
         target = {}
         target["boxes"] = boxes
@@ -162,6 +175,8 @@ class ConvertCocoPolysToMask(object):
         target["image_id"] = image_id
         if keypoints is not None:
             target["keypoints"] = keypoints
+        if custom_coords is not None:
+            target["coords"] = custom_coords
 
         # for conversion to coco api
         area = torch.tensor([obj["area"] for obj in anno])
@@ -171,6 +186,7 @@ class ConvertCocoPolysToMask(object):
 
         target["orig_size"] = torch.as_tensor([int(w), int(h)])
         # target["size"] = torch.as_tensor([int(w), int(h)])
+        # assert target['boxes'].shape[0] == target['coords'].shape[0]
     
         return image, target
 

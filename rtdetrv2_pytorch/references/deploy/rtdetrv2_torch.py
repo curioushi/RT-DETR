@@ -77,18 +77,19 @@ def main(args, ):
 
         with torch.no_grad():
             output = model(im_data, orig_size)
-        labels, boxes, scores = output
+        labels, boxes, scores, quads = output
 
         prediction[os.path.basename(im_file)] = {
             'boxes': boxes[0].cpu().numpy().tolist(),
             'labels': labels[0].cpu().numpy().tolist(),
             'scores': scores[0].cpu().numpy().tolist(),
+            'quads': (quads[0].cpu().numpy()).tolist(),
         }
 
         # draw([im_pil], labels, boxes, scores)
 
     with open('prediction.json', 'w') as f:
-        json.dump(prediction, f)
+        json.dump(prediction, f, indent=2)
 
 
 if __name__ == '__main__':

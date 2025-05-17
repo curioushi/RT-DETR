@@ -70,8 +70,8 @@ RTDETRPostProcessor:
 
 
 RTDETRCriterionv2:
-  weight_dict: {loss_vfl: 1, loss_bbox: 5, loss_giou: 2,}
-  losses: ['vfl', 'boxes', ]
+  weight_dict: {loss_vfl: 1, loss_bbox: 5, loss_giou: 2, loss_quads: 5}
+  losses: ['vfl', 'boxes', 'quads']
   alpha: 0.75
   gamma: 2.0
 
