@@ -77,13 +77,14 @@ def main(args, ):
 
         with torch.no_grad():
             output = model(im_data, orig_size)
-        labels, boxes, scores, quads = output
+        labels, boxes, scores, quads, normals = output
 
         prediction[os.path.basename(im_file)] = {
             'boxes': boxes[0].cpu().numpy().tolist(),
             'labels': labels[0].cpu().numpy().tolist(),
             'scores': scores[0].cpu().numpy().tolist(),
             'quads': (quads[0].cpu().numpy()).tolist(),
+            'normals': normals[0].cpu().numpy().tolist(),
         }
 
         # draw([im_pil], labels, boxes, scores)

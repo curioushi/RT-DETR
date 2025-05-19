@@ -125,6 +125,33 @@ class RTDETRCriterionv2(nn.Module):
         loss = loss.sum() / num_boxes
         return {'loss_quads': loss}
 
+    def loss_normals(self, outputs, targets, indices, num_boxes, **kwargs):
+        """Compute the L1 loss for predicted normals.
+           targets dicts must contain the key "normals" containing a tensor of dim [nb_target_normals, 3].
+           The target normals are expected to be normalized 3D vectors.
+        """
+        assert 'pred_normals' in outputs, "'pred_normals' not found in outputs."
+        idx = self._get_src_permutation_idx(indices)
+        src_normals = outputs['pred_normals'][idx]
+        
+        target_normals_list = []
+        for t, (_, i) in zip(targets, indices):
+            if 'normals' not in t:
+                raise ValueError("Target normals not found in one or more targets.")
+            if i.numel() > 0: # only gather if there are matched indices for this target
+                target_normals_list.append(t['normals'][i])
+
+        if not target_normals_list:
+            loss_normals = torch.zeros(1, device=src_normals.device, requires_grad=True)[0]
+        else:
+            target_normals = torch.cat(target_normals_list, dim=0)
+            assert src_normals.shape[0] == target_normals.shape[0], 'src_normals and target_normals shape mismatch'
+
+            loss_normals = F.smooth_l1_loss(src_normals, target_normals, reduction='none', beta=0.5)
+            loss_normals = loss_normals.sum() / num_boxes
+        
+        return {'loss_normals': loss_normals}
+
     def _get_src_permutation_idx(self, indices):
         # permute predictions following indices
         batch_idx = torch.cat([torch.full_like(src, i) for i, (src, _) in enumerate(indices)])
@@ -143,6 +170,7 @@ class RTDETRCriterionv2(nn.Module):
             'focal': self.loss_labels_focal,
             'vfl': self.loss_labels_vfl,
             'quads': self.loss_quads,
+            'normals': self.loss_normals,
         }
         assert loss in loss_map, f'do you really want to compute {loss} loss?'
         return loss_map[loss](outputs, targets, indices, num_boxes, **kwargs)
@@ -195,7 +223,7 @@ class RTDETRCriterionv2(nn.Module):
             dn_num_boxes = num_boxes * outputs['dn_meta']['dn_num_group']
             for i, aux_outputs in enumerate(outputs['dn_aux_outputs']):
                 for loss in self.losses:
-                    if loss in ['quads']:
+                    if loss in ['quads', 'normals']:
                         continue
                     meta = self.get_loss_meta_info(loss, aux_outputs, targets, indices)
                     l_dict = self.get_loss(loss, aux_outputs, targets, indices, dn_num_boxes, **meta)
@@ -220,7 +248,7 @@ class RTDETRCriterionv2(nn.Module):
                 matched = self.matcher(aux_outputs, targets)
                 indices = matched['indices']
                 for loss in self.losses:
-                    if loss in ['quads']:
+                    if loss in ['quads', 'normals']:
                         continue
                     meta = self.get_loss_meta_info(loss, aux_outputs, enc_targets, indices)
                     l_dict = self.get_loss(loss, aux_outputs, enc_targets, indices, num_boxes, **meta)

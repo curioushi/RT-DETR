@@ -157,14 +157,26 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
 
                 # 2. Draw Ground Truth boxes
                 gt_quads_tensor = target['coords'] 
+                gt_normals_tensor = target['normals']
 
                 gt_quads_np = gt_quads_tensor.cpu().numpy() / 1024 * 640
+                gt_normals_np = gt_normals_tensor.cpu().numpy()
 
                 for i in range(gt_quads_np.shape[0]):
                     quad = gt_quads_np[i] # [x1, y1, x2, y2, x3, y3, x4, y4]
+                    normal = gt_normals_np[i] # [nx, ny, nz]
+                    normal[1] *= -1
+                    normal[2] *= -1
+
+                    # Color from normal: (normal_component + 1) / 2 * 255
+                    # Components assumed to be in [-1, 1]
+                    color_r = int(((normal[0] + 1) / 2) * 255)
+                    color_g = int(((normal[1] + 1) / 2) * 255)
+                    color_b = int(((normal[2] + 1) / 2) * 255)
+                    draw_color_bgr = (color_b, color_g, color_r) # OpenCV uses BGR
 
                     # Draw quad
-                    cv2.polylines(img_gt_vis, [quad.astype(np.int32).reshape(-1, 2)], True, (0, 255, 0), 1, cv2.LINE_AA)
+                    cv2.polylines(img_gt_vis, [quad.astype(np.int32).reshape(-1, 2)], True, draw_color_bgr, 1, cv2.LINE_AA)
 
                 filename_gt = f"image_{image_id_val}_gt.png"
                 cv2.imwrite(filename_gt, img_gt_vis)
@@ -173,10 +185,12 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
                 pred_boxes_tensor = output['boxes']
                 pred_scores_tensor = output['scores']
                 pred_quads_tensor = output['quads']
+                pred_normals_tensor = output['normals']
 
                 pred_boxes_np = pred_boxes_tensor.cpu().detach().numpy() / 1024 * 640
                 pred_scores_np = pred_scores_tensor.cpu().detach().numpy()
                 pred_quads_np = pred_quads_tensor.cpu().detach().numpy() * 640
+                pred_normals_np = pred_normals_tensor.cpu().detach().numpy()
                 
                 
                 score_thresh = 0.6
@@ -184,13 +198,21 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
                     if pred_scores_np[i] > score_thresh:
                         box = pred_boxes_np[i]
                         quad = pred_quads_np[i] # [x1, y1, x2, y2, x3, y3, x4, y4]
+                        normal = pred_normals_np[i] # [nx, ny, nz]
+                        normal[1] *= -1
+                        normal[2] *= -1
+
+                        color_r = int(((normal[0] + 1) / 2) * 255)
+                        color_g = int(((normal[1] + 1) / 2) * 255)
+                        color_b = int(((normal[2] + 1) / 2) * 255)
+                        draw_color_bgr = (color_b, color_g, color_r) # OpenCV uses BGR
 
                         xmin, ymin, xmax, ymax = int(box[0]), int(box[1]), int(box[2]), int(box[3])
                         cx, cy = (xmin + xmax) / 2, (ymin + ymax) / 2
-                        cv2.rectangle(img_pred_vis, (xmin, ymin), (xmax, ymax), (0, 255, 0), 2)
+                        cv2.rectangle(img_pred_vis, (xmin, ymin), (xmax, ymax), draw_color_bgr, 2)
 
                         quad = quad.reshape(-1, 2) + np.array([cx, cy]).reshape(1, 2)
-                        cv2.polylines(img_pred_vis_quad, [quad.astype(np.int32).reshape(-1, 2)], True, (0, 255, 0), 1, cv2.LINE_AA)
+                        cv2.polylines(img_pred_vis_quad, [quad.astype(np.int32).reshape(-1, 2)], True, draw_color_bgr, 1, cv2.LINE_AA)
 
                 
                 filename_pred = f"image_{image_id_val}_pred_quad_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
