@@ -208,10 +208,8 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
                         draw_color_bgr = (color_b, color_g, color_r) # OpenCV uses BGR
 
                         xmin, ymin, xmax, ymax = int(box[0]), int(box[1]), int(box[2]), int(box[3])
-                        cx, cy = (xmin + xmax) / 2, (ymin + ymax) / 2
                         cv2.rectangle(img_pred_vis, (xmin, ymin), (xmax, ymax), draw_color_bgr, 2)
 
-                        quad = quad.reshape(-1, 2) + np.array([cx, cy]).reshape(1, 2)
                         cv2.polylines(img_pred_vis_quad, [quad.astype(np.int32).reshape(-1, 2)], True, draw_color_bgr, 1, cv2.LINE_AA)
 
                 

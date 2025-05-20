@@ -189,8 +189,6 @@ class NormalizeCoords(T.Transform):
         
         # If coords is (N, 8) and normalization_factor is (8), broadcasting applies correctly.
         coords = coords / normalization_factor
-        center = target['boxes'][:, :2]
-        coords = (coords.reshape(-1, 4, 2) - center.reshape(-1, 1, 2)).reshape(-1, 8)
         target['coords'] = coords
         
         return image, target, dataset

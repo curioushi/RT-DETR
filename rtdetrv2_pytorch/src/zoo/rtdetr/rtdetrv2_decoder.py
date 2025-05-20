@@ -260,6 +260,11 @@ class TransformerDecoder(nn.Module):
         dec_out_quads = []
         dec_out_normals = []
         ref_points_detach = F.sigmoid(ref_points_unact)
+        cx, cy, w, h = ref_points_detach[:, :, 0], ref_points_detach[:, :, 1], ref_points_detach[:, :, 2], ref_points_detach[:, :, 3]
+        ref_quads_detach = torch.stack([cx + w/2, cy + h/2,
+                                        cx - w/2, cy + h/2,
+                                        cx - w/2, cy - h/2,
+                                        cx + w/2, cy - h/2], dim=-1)
 
         output = target
         for i, layer in enumerate(self.layers):
@@ -270,29 +275,32 @@ class TransformerDecoder(nn.Module):
 
             inter_ref_bbox = F.sigmoid(bbox_head[i](output) + inverse_sigmoid(ref_points_detach))
 
-            predicted_quads = quad_head[i](output)
+            inter_ref_quads = quad_head[i](output) + ref_quads_detach
             
             predicted_normals = normals_head[i](output)
 
             if self.training:
                 dec_out_logits.append(score_head[i](output))
-                dec_out_quads.append(predicted_quads)
                 dec_out_normals.append(predicted_normals)
 
                 if i == 0:
                     dec_out_bboxes.append(inter_ref_bbox)
+                    dec_out_quads.append(inter_ref_quads)
                 else:
                     dec_out_bboxes.append(F.sigmoid(bbox_head[i](output) + inverse_sigmoid(ref_points)))
+                    dec_out_quads.append(quad_head[i](output) + ref_quads)
 
             elif i == self.eval_idx:
                 dec_out_logits.append(score_head[i](output))
                 dec_out_bboxes.append(inter_ref_bbox)
-                dec_out_quads.append(predicted_quads)
+                dec_out_quads.append(inter_ref_quads)
                 dec_out_normals.append(predicted_normals)
                 break
 
             ref_points = inter_ref_bbox
             ref_points_detach = inter_ref_bbox.detach()
+            ref_quads = inter_ref_quads
+            ref_quads_detach = inter_ref_quads.detach()
 
         return torch.stack(dec_out_bboxes), torch.stack(dec_out_logits), torch.stack(dec_out_quads), torch.stack(dec_out_normals)
 
