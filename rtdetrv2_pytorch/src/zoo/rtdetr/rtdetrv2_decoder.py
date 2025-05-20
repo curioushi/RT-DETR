@@ -260,11 +260,6 @@ class TransformerDecoder(nn.Module):
         dec_out_quads = []
         dec_out_normals = []
         ref_points_detach = F.sigmoid(ref_points_unact)
-        cx, cy, w, h = ref_points_detach[:, :, 0], ref_points_detach[:, :, 1], ref_points_detach[:, :, 2], ref_points_detach[:, :, 3]
-        ref_quads_detach = torch.stack([cx + w/2, cy + h/2,
-                                        cx - w/2, cy + h/2,
-                                        cx - w/2, cy - h/2,
-                                        cx + w/2, cy - h/2], dim=-1)
 
         output = target
         for i, layer in enumerate(self.layers):
@@ -274,7 +269,12 @@ class TransformerDecoder(nn.Module):
             output = layer(output, ref_points_input, memory, memory_spatial_shapes, attn_mask, memory_mask, query_pos_embed)
 
             inter_ref_bbox = F.sigmoid(bbox_head[i](output) + inverse_sigmoid(ref_points_detach))
-
+            if i == 0:
+                cx, cy, w, h = inter_ref_bbox[:, :, 0], inter_ref_bbox[:, :, 1], inter_ref_bbox[:, :, 2], inter_ref_bbox[:, :, 3]
+                ref_quads_detach = torch.stack([cx + w/2, cy + h/2,
+                                                cx - w/2, cy + h/2,
+                                                cx - w/2, cy - h/2,
+                                                cx + w/2, cy - h/2], dim=-1)
             inter_ref_quads = quad_head[i](output) + ref_quads_detach
             
             predicted_normals = normals_head[i](output)
