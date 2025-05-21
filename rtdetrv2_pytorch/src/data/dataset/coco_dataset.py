@@ -9,6 +9,7 @@ import torch
 import torch.utils.data
 
 import torchvision
+import numpy as np
 torchvision.disable_beta_transforms_warning()
 
 from PIL import Image 
@@ -141,9 +142,12 @@ class ConvertCocoPolysToMask(object):
 
         # Extract normals if present
         custom_normals = None
-        if anno and "normal" in anno[0]: # Check if normal data exists
+        if anno and "normal" in anno[0] and "pose" in anno[0]: # Check if normal data exists
             custom_normals = [obj["normal"] for obj in anno]
             custom_normals = torch.as_tensor(custom_normals, dtype=torch.float32).reshape(-1, 3)
+            custom_offsets = [-np.array(obj["pose"])[:3, 3].dot(normal) for obj, normal in zip(anno, custom_normals)]
+            custom_offsets = torch.as_tensor(custom_offsets, dtype=torch.float32).reshape(-1, 1)
+            custom_weights = torch.cat([custom_normals, custom_offsets], dim=1)
 
         if self.return_masks:
             segmentations = [obj["segmentation"] for obj in anno]
@@ -181,6 +185,8 @@ class ConvertCocoPolysToMask(object):
             target["coords"] = custom_coords
         if custom_normals is not None:
             target["normals"] = custom_normals
+        if custom_weights is not None:
+            target["weights"] = custom_weights
 
         # for conversion to coco api
         area = torch.tensor([obj["area"] for obj in anno])

@@ -46,7 +46,7 @@ class RTDETRPostProcessor(nn.Module):
     
     # def forward(self, outputs, orig_target_sizes):
     def forward(self, outputs, orig_target_sizes: torch.Tensor):
-        logits, boxes, quads, normals = outputs['pred_logits'], outputs['pred_boxes'], outputs['pred_quads'], outputs['pred_normals']
+        logits, boxes, quads, weights = outputs['pred_logits'], outputs['pred_boxes'], outputs['pred_quads'], outputs['pred_weights']
         # orig_target_sizes = torch.stack([t["orig_size"] for t in targets], dim=0)        
 
         bbox_pred = torchvision.ops.box_convert(boxes, in_fmt='cxcywh', out_fmt='xyxy')
@@ -61,7 +61,7 @@ class RTDETRPostProcessor(nn.Module):
             index = index // self.num_classes
             boxes = bbox_pred.gather(dim=1, index=index.unsqueeze(-1).repeat(1, 1, bbox_pred.shape[-1]))
             quads = quads.gather(dim=1, index=index.unsqueeze(-1).repeat(1, 1, quads.shape[-1]))
-            normals = normals.gather(dim=1, index=index.unsqueeze(-1).repeat(1, 1, normals.shape[-1]))
+            weights = weights.gather(dim=1, index=index.unsqueeze(-1).repeat(1, 1, weights.shape[-1]))
             
         else:
             scores = F.softmax(logits)[:, :, :-1]
@@ -71,11 +71,11 @@ class RTDETRPostProcessor(nn.Module):
                 labels = torch.gather(labels, dim=1, index=index)
                 boxes = torch.gather(boxes, dim=1, index=index.unsqueeze(-1).tile(1, 1, boxes.shape[-1]))
                 quads = torch.gather(quads, dim=1, index=index.unsqueeze(-1).tile(1, 1, quads.shape[-1]))
-                normals = torch.gather(normals, dim=1, index=index.unsqueeze(-1).tile(1, 1, normals.shape[-1]))
+                weights = torch.gather(weights, dim=1, index=index.unsqueeze(-1).tile(1, 1, weights.shape[-1]))
 
         # TODO for onnx export
         if self.deploy_mode:
-            return labels, boxes, scores, quads, normals
+            return labels, boxes, scores, quads, weights
 
         # TODO
         if self.remap_mscoco_category:
@@ -84,8 +84,8 @@ class RTDETRPostProcessor(nn.Module):
                 .to(boxes.device).reshape(labels.shape)
 
         results = []
-        for lab, box, sco, quad, nor in zip(labels, boxes, scores, quads, normals):
-            result = dict(labels=lab, boxes=box, scores=sco, quads=quad, normals=nor)
+        for lab, box, sco, quad, weight in zip(labels, boxes, scores, quads, weights):
+            result = dict(labels=lab, boxes=box, scores=sco, quads=quad, weights=weight)
             results.append(result)
         
         return results

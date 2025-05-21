@@ -157,16 +157,21 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
 
                 # 2. Draw Ground Truth boxes
                 gt_quads_tensor = target['coords'] 
-                gt_normals_tensor = target['normals']
+                gt_weights_tensor = target['weights']
+                gt_normals_tensor = gt_weights_tensor[:, :3]
+                gt_offsets_tensor = gt_weights_tensor[:, 3]
 
                 gt_quads_np = gt_quads_tensor.cpu().numpy() / 1024 * 640
                 gt_normals_np = gt_normals_tensor.cpu().numpy()
+                gt_offsets_np = gt_offsets_tensor.cpu().numpy()
 
                 for i in range(gt_quads_np.shape[0]):
                     quad = gt_quads_np[i] # [x1, y1, x2, y2, x3, y3, x4, y4]
                     normal = gt_normals_np[i] # [nx, ny, nz]
                     normal[1] *= -1
                     normal[2] *= -1
+                    offset = gt_offsets_np[i]
+                    quad_center = np.array(quad).reshape(4, 2).mean(axis=0)
 
                     # Color from normal: (normal_component + 1) / 2 * 255
                     # Components assumed to be in [-1, 1]
@@ -178,6 +183,13 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
                     # Draw quad
                     cv2.polylines(img_gt_vis, [quad.astype(np.int32).reshape(-1, 2)], True, draw_color_bgr, 1, cv2.LINE_AA)
 
+                    # Draw offset
+                    text = f'{offset:.3f}'
+                    (text_width, text_height), baseline = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                    text_x = int(quad_center[0] - text_width/2)
+                    text_y = int(quad_center[1] + text_height/2)
+                    cv2.putText(img_gt_vis, text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, draw_color_bgr, 1, cv2.LINE_AA)
+
                 filename_gt = f"image_{image_id_val}_gt.png"
                 cv2.imwrite(filename_gt, img_gt_vis)
 
@@ -185,13 +197,15 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
                 pred_boxes_tensor = output['boxes']
                 pred_scores_tensor = output['scores']
                 pred_quads_tensor = output['quads']
-                pred_normals_tensor = output['normals']
+                pred_weights_tensor = output['weights']
+                pred_normals_tensor = pred_weights_tensor[:, :3]
+                pred_offsets_tensor = pred_weights_tensor[:, 3]
 
                 pred_boxes_np = pred_boxes_tensor.cpu().detach().numpy() / 1024 * 640
                 pred_scores_np = pred_scores_tensor.cpu().detach().numpy()
                 pred_quads_np = pred_quads_tensor.cpu().detach().numpy() * 640
                 pred_normals_np = pred_normals_tensor.cpu().detach().numpy()
-                
+                pred_offsets_np = pred_offsets_tensor.cpu().detach().numpy()
                 
                 score_thresh = 0.6
                 for i in range(pred_quads_np.shape[0]):
@@ -201,6 +215,8 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
                         normal = pred_normals_np[i] # [nx, ny, nz]
                         normal[1] *= -1
                         normal[2] *= -1
+                        offset = pred_offsets_np[i]
+                        quad_center = np.array(quad).reshape(4, 2).mean(axis=0)
 
                         color_r = int(((normal[0] + 1) / 2) * 255)
                         color_g = int(((normal[1] + 1) / 2) * 255)
@@ -211,6 +227,13 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
                         cv2.rectangle(img_pred_vis, (xmin, ymin), (xmax, ymax), draw_color_bgr, 2)
 
                         cv2.polylines(img_pred_vis_quad, [quad.astype(np.int32).reshape(-1, 2)], True, draw_color_bgr, 1, cv2.LINE_AA)
+
+                        # Draw offset
+                        text = f'{offset:.3f}'
+                        (text_width, text_height), baseline = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                        text_x = int(quad_center[0] - text_width/2)
+                        text_y = int(quad_center[1] + text_height/2)
+                        cv2.putText(img_pred_vis_quad, text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, draw_color_bgr, 1, cv2.LINE_AA)
 
                 
                 filename_pred = f"image_{image_id_val}_pred_quad_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
