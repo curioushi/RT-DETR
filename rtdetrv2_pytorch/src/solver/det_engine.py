@@ -8,6 +8,7 @@ Copyright(c) 2023 lyuwenyu. All Rights Reserved.
 import sys
 import math
 from typing import Iterable
+import os
 
 import cv2
 import numpy as np
@@ -108,7 +109,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
 
 @torch.no_grad()
-def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, data_loader, coco_evaluator: CocoEvaluator, device):
+def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, data_loader, coco_evaluator: CocoEvaluator, device, output_dir: str):
     model.eval()
     criterion.eval()
     coco_evaluator.cleanup()
@@ -190,7 +191,7 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
                     text_y = int(quad_center[1] + text_height/2)
                     cv2.putText(img_gt_vis, text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, draw_color_bgr, 1, cv2.LINE_AA)
 
-                filename_gt = f"image_{image_id_val}_gt.png"
+                filename_gt = os.path.join(output_dir, f"image_{image_id_val}_gt.png")
                 cv2.imwrite(filename_gt, img_gt_vis)
 
                 # 3. Draw Prediction boxes (score > 0.6)
@@ -236,10 +237,10 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
                         cv2.putText(img_pred_vis_quad, text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, draw_color_bgr, 1, cv2.LINE_AA)
 
                 
-                filename_pred = f"image_{image_id_val}_pred_quad_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-                cv2.imwrite(filename_pred, img_pred_vis_quad)
-                filename_pred = f"image_{image_id_val}_pred_box_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-                cv2.imwrite(filename_pred, img_pred_vis)
+                filename_pred_quad = os.path.join(output_dir, f"image_{image_id_val}_pred_quad_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
+                cv2.imwrite(filename_pred_quad, img_pred_vis_quad)
+                filename_pred_box = os.path.join(output_dir, f"image_{image_id_val}_pred_box_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
+                cv2.imwrite(filename_pred_box, img_pred_vis)
         if coco_evaluator is not None:
             coco_evaluator.update(res)
 
