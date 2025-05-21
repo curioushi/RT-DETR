@@ -142,12 +142,21 @@ class ConvertCocoPolysToMask(object):
 
         # Extract normals if present
         custom_normals = None
+        custom_weights = None
         if anno and "normal" in anno[0] and "pose" in anno[0]: # Check if normal data exists
             custom_normals = [obj["normal"] for obj in anno]
             custom_normals = torch.as_tensor(custom_normals, dtype=torch.float32).reshape(-1, 3)
             custom_offsets = [-np.array(obj["pose"])[:3, 3].dot(normal) for obj, normal in zip(anno, custom_normals)]
             custom_offsets = torch.as_tensor(custom_offsets, dtype=torch.float32).reshape(-1, 1)
             custom_weights = torch.cat([custom_normals, custom_offsets], dim=1)
+        
+        custom_camera_Ks = None
+        if anno and "camera_K" in anno[0]:
+            custom_camera_Ks = []
+            for obj in anno:
+                camera_K = obj["camera_K"]
+                custom_camera_Ks.append([camera_K[0][0], camera_K[0][2], camera_K[1][1], camera_K[1][2]])
+            custom_camera_Ks = torch.as_tensor(custom_camera_Ks, dtype=torch.float32).reshape(-1, 4)
 
         if self.return_masks:
             segmentations = [obj["segmentation"] for obj in anno]
@@ -187,6 +196,8 @@ class ConvertCocoPolysToMask(object):
             target["normals"] = custom_normals
         if custom_weights is not None:
             target["weights"] = custom_weights
+        if custom_camera_Ks is not None:
+            target["camera_Ks"] = custom_camera_Ks
 
         # for conversion to coco api
         area = torch.tensor([obj["area"] for obj in anno])

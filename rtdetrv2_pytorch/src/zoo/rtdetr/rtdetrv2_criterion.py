@@ -119,21 +119,9 @@ class RTDETRCriterionv2(nn.Module):
         assert 'pred_quads' in outputs
         idx = self._get_src_permutation_idx(indices)
         src_quads = outputs['pred_quads'][idx]
-        target_quads = torch.cat([t['coords'][i] for t, (_, i) in zip(targets, indices)], dim=0)
-        
-        loss = F.l1_loss(src_quads, target_quads, reduction='none')
-        loss = loss.sum() / num_boxes
-        return {'loss_quads': loss}
-
-    def loss_weights(self, outputs, targets, indices, num_boxes, **kwargs):
-        """Compute the L1 loss for predicted weights.
-           targets dicts must contain the key "weights" containing a tensor of dim [nb_target_weights, 4].
-           The target weights are expected to be normalized 3D vectors.
-        """
-        assert 'pred_weights' in outputs, "'pred_weights' not found in outputs."
-        idx = self._get_src_permutation_idx(indices)
         src_weights = outputs['pred_weights'][idx]
-        
+
+        target_quads = torch.cat([t['coords'][i] for t, (_, i) in zip(targets, indices)], dim=0)
         target_weights_list = []
         for t, (_, i) in zip(targets, indices):
             if 'weights' not in t:
@@ -141,16 +129,116 @@ class RTDETRCriterionv2(nn.Module):
             if i.numel() > 0: # only gather if there are matched indices for this target
                 target_weights_list.append(t['weights'][i])
 
+        losses = {}
+        loss_quads = F.l1_loss(src_quads, target_quads, reduction='none')
+
         if not target_weights_list:
             loss_weights = torch.zeros(1, device=src_weights.device, requires_grad=True)[0]
+            loss_length_consistency = torch.zeros(1, device=src_weights.device, requires_grad=True)[0]
         else:
             target_weights = torch.cat(target_weights_list, dim=0)
             assert src_weights.shape[0] == target_weights.shape[0], 'src_weights and target_weights shape mismatch'
 
-            loss_weights = F.smooth_l1_loss(src_weights, target_weights, reduction='none', beta=0.5)
-            loss_weights = loss_weights.sum() / num_boxes
+            loss_weights = F.l1_loss(src_weights, target_weights, reduction='none')
+            loss_length_consistency = self.loss_consistency_per_quad(outputs, targets, indices)
+            mask_good_quads = (loss_weights.mean(axis=-1) < 0.1) & (loss_quads.max(axis=-1)[0] < 0.01)
+            loss_length_consistency = (loss_length_consistency * mask_good_quads).sum() / (mask_good_quads.sum() + 1e-7)
         
-        return {'loss_weights': loss_weights}
+        losses['loss_quads'] = loss_quads.sum() / num_boxes
+        losses['loss_weights'] = loss_weights.sum() / num_boxes
+        losses['loss_length_consistency'] = loss_length_consistency
+
+        return losses
+    
+    def loss_consistency_per_quad(self, outputs, targets, indices):
+        assert 'pred_quads' in outputs, "'pred_quads' not found in outputs."
+        assert 'pred_weights' in outputs, "'pred_weights' not found in outputs."
+        
+        idx = self._get_src_permutation_idx(indices)
+        src_quads_flat = outputs['pred_quads'][idx] # Shape: (M, 8)
+        src_weights = outputs['pred_weights'][idx]    # Shape: (M, 4), for (a, b, c, d)
+
+        if src_quads_flat.shape[0] == 0:
+            # No matched predictions, so loss is 0
+            return {'loss_quads_3d': torch.tensor(0.0, device=src_quads_flat.device, dtype=src_quads_flat.dtype)}
+
+        # Collect camera K and original sizes for matched predictions
+        # This logic mirrors the structure seen in the user-provided context for these variables
+        target_camera_Ks_for_cat = []
+        target_orig_sizes_for_cat = []
+        for t, (_, matched_target_indices_in_image) in zip(targets, indices):
+            # matched_target_indices_in_image are indices into this specific target `t`'s annotations
+            if matched_target_indices_in_image.numel() > 0:
+                if 'camera_Ks' not in t:
+                    raise ValueError(f"Target 'camera_Ks' not found in target dict (keys: {list(t.keys())}) for an image with matches.")
+                if 'orig_size' not in t:
+                    raise ValueError(f"Target 'orig_size' not found in target dict (keys: {list(t.keys())}) for an image with matches.")
+                
+                target_camera_Ks_for_cat.append(t['camera_Ks'][matched_target_indices_in_image])
+                num_matches_in_image = len(matched_target_indices_in_image)
+                target_orig_sizes_for_cat.append(t['orig_size'].unsqueeze(0).repeat(num_matches_in_image, 1))
+        
+        # If src_quads_flat.shape[0] > 0, then target_camera_Ks_for_cat and target_orig_sizes_for_cat must be non-empty,
+        # otherwise an error would have been raised or src_quads_flat would have been empty.
+        norm_target_camera_Ks_unnormalized = torch.cat(target_camera_Ks_for_cat, dim=0)
+        target_orig_sizes_batched = torch.cat(target_orig_sizes_for_cat, dim=0)
+        
+        # Normalize camera intrinsics using the formula from the provided context
+        # Adding a small epsilon for stability during division
+        denominator_K_norm = target_orig_sizes_batched.repeat(1, 2)
+        norm_target_camera_Ks = norm_target_camera_Ks_unnormalized / denominator_K_norm
+        # norm_target_camera_Ks is expected to be [fx, cx, fy, cy] (all normalized)
+
+        fx = norm_target_camera_Ks[:, 0:1] # Shape: (M, 1)
+        cx = norm_target_camera_Ks[:, 1:2] # Shape: (M, 1)
+        fy = norm_target_camera_Ks[:, 2:3] # Shape: (M, 1)
+        cy = norm_target_camera_Ks[:, 3:4] # Shape: (M, 1)
+        
+        src_quads_reshaped = src_quads_flat.reshape(-1, 4, 2) # Shape: (M, 4, 2)
+        u = src_quads_reshaped[..., 0] # Shape: (M, 4) - normalized image coordinates
+        v = src_quads_reshaped[..., 1] # Shape: (M, 4) - normalized image coordinates
+
+        Dx = (u - cx) / fx # Shape: (M, 4)
+        Dy = (v - cy) / fy # Shape: (M, 4)
+        Dz = torch.ones_like(Dx)    # Shape: (M, 4) - using Dx to get shape, device, dtype
+        rays_d = torch.stack([Dx, Dy, Dz], dim=-1) # Shape: (M, 4, 3)
+
+        n_plane = src_weights[:, :3]       # Shape: (M, 3) - normal vector (a,b,c)
+        d_plane = src_weights[:, 3:4]      # Shape: (M, 1) - offset d
+
+        # Denominator for t: n_plane . D = a*Dx + b*Dy + c*Dz
+        # n_plane (M,3), rays_d (M,4,3). Einsum is efficient for this.
+        n_plane_dot_D = torch.einsum('mi,mji->mj', n_plane, rays_d) # Shape: (M, 4)
+
+        # Parameter t for ray equation P(t) = O + tD (O is origin). So, t = -d_plane / (n_plane . D)
+        # Stabilize division by zero or very small denominators
+        abs_denom = torch.abs(n_plane_dot_D)
+        signed_epsilon = torch.copysign(torch.full_like(n_plane_dot_D, 1e-7), n_plane_dot_D)
+        safe_denominator = torch.where(abs_denom < 1e-7, signed_epsilon, n_plane_dot_D)
+        
+        t = -d_plane / safe_denominator # Shape: (M, 4)
+        
+        P_intersect = t.unsqueeze(-1) * rays_d # Shape: (M, 4, 3) - These are p1, p2, p3, p4 for each quad
+
+        edges_vec = P_intersect - torch.roll(P_intersect, shifts=-1, dims=1) # Shape: (M, 4, 3)
+        edge_lengths = torch.norm(edges_vec, p=2, dim=-1) # Shape: (M, 4)
+        
+        l1 = edge_lengths[:, 0] 
+        l2 = edge_lengths[:, 1] 
+        l3 = edge_lengths[:, 2] 
+        l4 = edge_lengths[:, 3] 
+
+        loss_length_per_quad = (torch.abs(l1 - l3) / (l1 + l3 + 1e-7)) + \
+                               (torch.abs(l2 - l4) / (l2 + l4 + 1e-7))
+
+        # cos1 = torch.einsum('mi,mi->m', edges_vec[:, 0], edges_vec[:, 1]) / (l1 * l2 + 1e-7)
+        # cos2 = torch.einsum('mi,mi->m', edges_vec[:, 1], edges_vec[:, 2]) / (l2 * l3 + 1e-7)
+        # cos3 = torch.einsum('mi,mi->m', edges_vec[:, 2], edges_vec[:, 3]) / (l3 * l4 + 1e-7)
+        # cos4 = torch.einsum('mi,mi->m', edges_vec[:, 3], edges_vec[:, 0]) / (l4 * l1 + 1e-7)
+        # loss_angle_per_quad = torch.abs(cos1) + torch.abs(cos2) + torch.abs(cos3) + torch.abs(cos4)
+        
+        return loss_length_per_quad
+        
 
     def _get_src_permutation_idx(self, indices):
         # permute predictions following indices
@@ -170,7 +258,6 @@ class RTDETRCriterionv2(nn.Module):
             'focal': self.loss_labels_focal,
             'vfl': self.loss_labels_vfl,
             'quads': self.loss_quads,
-            'weights': self.loss_weights,
         }
         assert loss in loss_map, f'do you really want to compute {loss} loss?'
         return loss_map[loss](outputs, targets, indices, num_boxes, **kwargs)
@@ -223,7 +310,7 @@ class RTDETRCriterionv2(nn.Module):
             dn_num_boxes = num_boxes * outputs['dn_meta']['dn_num_group']
             for i, aux_outputs in enumerate(outputs['dn_aux_outputs']):
                 for loss in self.losses:
-                    if loss in ['quads', 'weights']:
+                    if loss in ['quads']:
                         continue
                     meta = self.get_loss_meta_info(loss, aux_outputs, targets, indices)
                     l_dict = self.get_loss(loss, aux_outputs, targets, indices, dn_num_boxes, **meta)
@@ -248,7 +335,7 @@ class RTDETRCriterionv2(nn.Module):
                 matched = self.matcher(aux_outputs, targets)
                 indices = matched['indices']
                 for loss in self.losses:
-                    if loss in ['quads', 'weights']:
+                    if loss in ['quads']:
                         continue
                     meta = self.get_loss_meta_info(loss, aux_outputs, enc_targets, indices)
                     l_dict = self.get_loss(loss, aux_outputs, enc_targets, indices, num_boxes, **meta)
