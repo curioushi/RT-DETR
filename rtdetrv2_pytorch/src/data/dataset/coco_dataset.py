@@ -38,13 +38,7 @@ class CocoDetection(torchvision.datasets.CocoDetection, DetDataset):
     def __getitem__(self, idx):
         img, target = self.load_item(idx)
         if self._transforms is not None:
-            before_boxes_shape = target['boxes'].shape
-            before_coords_shape = target['coords'].shape
             img, target, _ = self._transforms(img, target, self)
-            after_boxes_shape = target['boxes'].shape
-            after_coords_shape = target['coords'].shape
-            # print(f'boxes: {before_boxes_shape[0]} -> {after_boxes_shape[0]}, coords: {before_coords_shape[0]} -> {after_coords_shape[0]}')
-            assert after_boxes_shape[0] == after_coords_shape[0]
         return img, target
 
     def load_item(self, idx):
