@@ -140,15 +140,13 @@ class RTDETRCriterionv2(nn.Module):
             assert src_weights.shape[0] == target_weights.shape[0], 'src_weights and target_weights shape mismatch'
 
             loss_weights = F.l1_loss(src_weights, target_weights, reduction='none')
-            loss_length_consistency, loss_angle_consistency = self.loss_consistency_per_quad(outputs, targets, indices)
+            loss_length_consistency = self.loss_consistency_per_quad(outputs, targets, indices)
             mask_good_quads = (loss_weights.mean(axis=-1) < 0.1) & (loss_quads.max(axis=-1)[0] < 0.01)
             loss_length_consistency = (loss_length_consistency * mask_good_quads).sum() / (mask_good_quads.sum() + 1e-7)
-            loss_angle_consistency = (loss_angle_consistency * mask_good_quads).sum() / (mask_good_quads.sum() + 1e-7)
 
         losses['loss_quads'] = loss_quads.sum() / num_boxes
         losses['loss_weights'] = loss_weights.sum() / num_boxes
         losses['loss_length_consistency'] = loss_length_consistency
-        losses['loss_angle_consistency'] = loss_angle_consistency
 
         return losses
     
@@ -233,14 +231,14 @@ class RTDETRCriterionv2(nn.Module):
         loss_length_per_quad = (torch.abs(l1 - l3) / (l1 + l3 + 1e-7)) + \
                                (torch.abs(l2 - l4) / (l2 + l4 + 1e-7))
 
-        inner1 = torch.einsum('mi,mi->m', edges_vec[:, 0], edges_vec[:, 1]) / (l1 * l2 + 1e-7)
-        inner2 = torch.einsum('mi,mi->m', edges_vec[:, 1], edges_vec[:, 2]) / (l2 * l3 + 1e-7)
-        inner3 = torch.einsum('mi,mi->m', edges_vec[:, 2], edges_vec[:, 3]) / (l3 * l4 + 1e-7)
-        inner4 = torch.einsum('mi,mi->m', edges_vec[:, 3], edges_vec[:, 0]) / (l4 * l1 + 1e-7)
-        loss_angle_per_quad = (torch.abs(inner1) + torch.abs(inner2) + torch.abs(inner3) + torch.abs(inner4)) / 4
+        # inner1 = torch.einsum('mi,mi->m', edges_vec[:, 0], edges_vec[:, 1]) / (l1 * l2 + 1e-7)
+        # inner2 = torch.einsum('mi,mi->m', edges_vec[:, 1], edges_vec[:, 2]) / (l2 * l3 + 1e-7)
+        # inner3 = torch.einsum('mi,mi->m', edges_vec[:, 2], edges_vec[:, 3]) / (l3 * l4 + 1e-7)
+        # inner4 = torch.einsum('mi,mi->m', edges_vec[:, 3], edges_vec[:, 0]) / (l4 * l1 + 1e-7)
+        # loss_angle_per_quad = (torch.abs(inner1) + torch.abs(inner2) + torch.abs(inner3) + torch.abs(inner4)) / 4
         
         
-        return loss_length_per_quad, loss_angle_per_quad
+        return loss_length_per_quad
         
 
     def _get_src_permutation_idx(self, indices):

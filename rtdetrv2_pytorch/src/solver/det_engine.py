@@ -9,6 +9,7 @@ import sys
 import math
 from typing import Iterable
 import os
+import json
 
 import cv2
 import numpy as np
@@ -166,6 +167,14 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
                 gt_normals_np = gt_normals_tensor.cpu().numpy()
                 gt_offsets_np = gt_offsets_tensor.cpu().numpy()
 
+                json_data = dict()
+                json_data['ground_truth'] = {
+                    "camera_Ks": target['camera_Ks'].cpu().numpy().tolist(),
+                    "quads": gt_quads_np.tolist(),
+                    "normals": gt_normals_np.tolist(),
+                    "offsets": gt_offsets_np.tolist(),
+                }
+
                 for i in range(gt_quads_np.shape[0]):
                     quad = gt_quads_np[i] # [x1, y1, x2, y2, x3, y3, x4, y4]
                     normal = gt_normals_np[i] # [nx, ny, nz]
@@ -207,7 +216,16 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
                 pred_quads_np = pred_quads_tensor.cpu().detach().numpy() * 640
                 pred_normals_np = pred_normals_tensor.cpu().detach().numpy()
                 pred_offsets_np = pred_offsets_tensor.cpu().detach().numpy()
-                
+
+                json_data['predictions'] = {
+                    "scores": pred_scores_np.tolist(),
+                    "quads": pred_quads_np.tolist(),
+                    "normals": pred_normals_np.tolist(),
+                    "offsets": pred_offsets_np.tolist(),
+                }
+                with open(os.path.join(output_dir, f"prediction_{image_id_val}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"), "w") as f:
+                    json.dump(json_data, f, indent=2)
+
                 score_thresh = 0.6
                 for i in range(pred_quads_np.shape[0]):
                     if pred_scores_np[i] > score_thresh:
