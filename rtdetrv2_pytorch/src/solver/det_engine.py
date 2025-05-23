@@ -153,52 +153,27 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
 
                 img_gt_vis = img_bgr.copy()
                 img_pred_vis = img_bgr.copy()
-                img_pred_vis_quad = img_bgr.copy()
+                # img_pred_vis_quad = img_bgr.copy()
 
                 image_id_val = target['image_id'].item()
 
                 # 2. Draw Ground Truth boxes
-                gt_quads_tensor = target['coords'] 
-                gt_weights_tensor = target['weights']
-                gt_normals_tensor = gt_weights_tensor[:, :3]
-                gt_offsets_tensor = gt_weights_tensor[:, 3]
+                gt_boxes_tensor = target['boxes'] 
+                gt_labels_tensor = target['labels']
 
-                gt_quads_np = gt_quads_tensor.cpu().numpy() / 1024 * 640
-                gt_normals_np = gt_normals_tensor.cpu().numpy()
-                gt_offsets_np = gt_offsets_tensor.cpu().numpy()
+                gt_boxes_np = gt_boxes_tensor.cpu().detach().numpy()
+                gt_labels_np = gt_labels_tensor.cpu().detach().numpy()
 
-                json_data = dict()
-                json_data['ground_truth'] = {
-                    "camera_Ks": target['camera_Ks'].cpu().numpy().tolist(),
-                    "quads": gt_quads_np.tolist(),
-                    "normals": gt_normals_np.tolist(),
-                    "offsets": gt_offsets_np.tolist(),
+                class_to_colors = {
+                    0: (0, 255, 0),
+                    1: (255, 0, 0),
                 }
+                class_to_colors.update({ i:(0, 0, 0) for i in range(2, 500)})
 
-                for i in range(gt_quads_np.shape[0]):
-                    quad = gt_quads_np[i] # [x1, y1, x2, y2, x3, y3, x4, y4]
-                    normal = gt_normals_np[i] # [nx, ny, nz]
-                    normal[1] *= -1
-                    normal[2] *= -1
-                    offset = gt_offsets_np[i]
-                    quad_center = np.array(quad).reshape(4, 2).mean(axis=0)
-
-                    # Color from normal: (normal_component + 1) / 2 * 255
-                    # Components assumed to be in [-1, 1]
-                    color_r = int(((normal[0] + 1) / 2) * 255)
-                    color_g = int(((normal[1] + 1) / 2) * 255)
-                    color_b = int(((normal[2] + 1) / 2) * 255)
-                    draw_color_bgr = (color_b, color_g, color_r) # OpenCV uses BGR
-
-                    # Draw quad
-                    cv2.polylines(img_gt_vis, [quad.astype(np.int32).reshape(-1, 2)], True, draw_color_bgr, 1, cv2.LINE_AA)
-
-                    # Draw offset
-                    text = f'{offset:.3f}'
-                    (text_width, text_height), baseline = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-                    text_x = int(quad_center[0] - text_width/2)
-                    text_y = int(quad_center[1] + text_height/2)
-                    cv2.putText(img_gt_vis, text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, draw_color_bgr, 1, cv2.LINE_AA)
+                for i in range(gt_boxes_np.shape[0]):
+                    x1, y1, x2, y2 = gt_boxes_np[i].astype(np.int32)
+                    label = gt_labels_np[i]
+                    cv2.rectangle(img_gt_vis, (x1, y1), (x2, y2), class_to_colors[label], 1)
 
                 filename_gt = os.path.join(output_dir, f"image_{image_id_val}_gt.png")
                 cv2.imwrite(filename_gt, img_gt_vis)
@@ -206,57 +181,21 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
                 # 3. Draw Prediction boxes (score > 0.6)
                 pred_boxes_tensor = output['boxes']
                 pred_scores_tensor = output['scores']
-                pred_quads_tensor = output['quads']
-                pred_weights_tensor = output['weights']
-                pred_normals_tensor = pred_weights_tensor[:, :3]
-                pred_offsets_tensor = pred_weights_tensor[:, 3]
+                pred_labels_tensor = output['labels']
 
                 pred_boxes_np = pred_boxes_tensor.cpu().detach().numpy() / 1024 * 640
                 pred_scores_np = pred_scores_tensor.cpu().detach().numpy()
-                pred_quads_np = pred_quads_tensor.cpu().detach().numpy() * 640
-                pred_normals_np = pred_normals_tensor.cpu().detach().numpy()
-                pred_offsets_np = pred_offsets_tensor.cpu().detach().numpy()
-
-                json_data['predictions'] = {
-                    "scores": pred_scores_np.tolist(),
-                    "quads": pred_quads_np.tolist(),
-                    "normals": pred_normals_np.tolist(),
-                    "offsets": pred_offsets_np.tolist(),
-                }
-                with open(os.path.join(output_dir, f"prediction_{image_id_val}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"), "w") as f:
-                    json.dump(json_data, f, indent=2)
+                pred_labels_np = pred_labels_tensor.cpu().detach().numpy()
 
                 score_thresh = 0.6
-                for i in range(pred_quads_np.shape[0]):
+                for i in range(pred_boxes_np.shape[0]):
                     if pred_scores_np[i] > score_thresh:
                         box = pred_boxes_np[i]
-                        quad = pred_quads_np[i] # [x1, y1, x2, y2, x3, y3, x4, y4]
-                        normal = pred_normals_np[i] # [nx, ny, nz]
-                        normal[1] *= -1
-                        normal[2] *= -1
-                        offset = pred_offsets_np[i]
-                        quad_center = np.array(quad).reshape(4, 2).mean(axis=0)
-
-                        color_r = int(((normal[0] + 1) / 2) * 255)
-                        color_g = int(((normal[1] + 1) / 2) * 255)
-                        color_b = int(((normal[2] + 1) / 2) * 255)
-                        draw_color_bgr = (color_b, color_g, color_r) # OpenCV uses BGR
+                        label = pred_labels_np[i]
 
                         xmin, ymin, xmax, ymax = int(box[0]), int(box[1]), int(box[2]), int(box[3])
-                        cv2.rectangle(img_pred_vis, (xmin, ymin), (xmax, ymax), draw_color_bgr, 2)
+                        cv2.rectangle(img_pred_vis, (xmin, ymin), (xmax, ymax), class_to_colors[label - 1], 1)
 
-                        cv2.polylines(img_pred_vis_quad, [quad.astype(np.int32).reshape(-1, 2)], True, draw_color_bgr, 1, cv2.LINE_AA)
-
-                        # Draw offset
-                        text = f'{offset:.3f}'
-                        (text_width, text_height), baseline = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-                        text_x = int(quad_center[0] - text_width/2)
-                        text_y = int(quad_center[1] + text_height/2)
-                        cv2.putText(img_pred_vis_quad, text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, draw_color_bgr, 1, cv2.LINE_AA)
-
-                
-                filename_pred_quad = os.path.join(output_dir, f"image_{image_id_val}_pred_quad_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
-                cv2.imwrite(filename_pred_quad, img_pred_vis_quad)
                 filename_pred_box = os.path.join(output_dir, f"image_{image_id_val}_pred_box_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
                 cv2.imwrite(filename_pred_box, img_pred_vis)
         if coco_evaluator is not None:
