@@ -366,7 +366,7 @@ class RTDETRTransformerv2(nn.Module):
 
         # FPN layers
         depth_mult = 1.0 # default value from HybridEncoder
-        expansion = 1.0 # default value from HybridEncoder
+        expansion = 0.5 # default value from HybridEncoder
         act_fn = 'silu' # default value from HybridEncoder
 
         self.lateral_convs = nn.ModuleList()
