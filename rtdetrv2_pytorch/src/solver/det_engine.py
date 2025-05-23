@@ -17,6 +17,7 @@ from datetime import datetime
 
 import torch
 import torch.amp 
+import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 from torch.cuda.amp.grad_scaler import GradScaler
 
@@ -160,9 +161,11 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
                 # 2. Draw Ground Truth boxes
                 gt_boxes_tensor = target['boxes'] 
                 gt_labels_tensor = target['labels']
+                gt_masks_tensor = target['masks']
 
                 gt_boxes_np = gt_boxes_tensor.cpu().detach().numpy()
                 gt_labels_np = gt_labels_tensor.cpu().detach().numpy()
+                gt_masks_np = gt_masks_tensor.cpu().detach().numpy()
 
                 class_to_colors = {
                     0: (0, 255, 0),
@@ -170,10 +173,15 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
                 }
                 class_to_colors.update({ i:(0, 0, 0) for i in range(2, 500)})
 
+                colored_mask = img_gt_vis.copy()
                 for i in range(gt_boxes_np.shape[0]):
                     x1, y1, x2, y2 = gt_boxes_np[i].astype(np.int32)
                     label = gt_labels_np[i]
+                    mask = gt_masks_np[i] > 0.5
+
                     cv2.rectangle(img_gt_vis, (x1, y1), (x2, y2), class_to_colors[label], 1)
+                    colored_mask[mask] = np.random.randint(0, 255, 3)
+                img_gt_vis = cv2.addWeighted(img_gt_vis, 0.8, colored_mask, 0.2, 0)
 
                 filename_gt = os.path.join(output_dir, f"image_{image_id_val}_gt.png")
                 cv2.imwrite(filename_gt, img_gt_vis)
@@ -182,19 +190,27 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
                 pred_boxes_tensor = output['boxes']
                 pred_scores_tensor = output['scores']
                 pred_labels_tensor = output['labels']
+                pred_masks_tensor = output['masks']
+                pred_masks_tensor = F.interpolate(pred_masks_tensor.unsqueeze(1), size=(640, 640), mode='bilinear', align_corners=False).squeeze(1)
+                pred_masks_tensor = F.sigmoid(pred_masks_tensor)
 
                 pred_boxes_np = pred_boxes_tensor.cpu().detach().numpy() / 1024 * 640
                 pred_scores_np = pred_scores_tensor.cpu().detach().numpy()
                 pred_labels_np = pred_labels_tensor.cpu().detach().numpy()
+                pred_masks_np = pred_masks_tensor.cpu().detach().numpy()
 
                 score_thresh = 0.6
+                colored_mask = img_pred_vis.copy()
                 for i in range(pred_boxes_np.shape[0]):
                     if pred_scores_np[i] > score_thresh:
                         box = pred_boxes_np[i]
                         label = pred_labels_np[i]
+                        mask = pred_masks_np[i] > 0.5
 
                         xmin, ymin, xmax, ymax = int(box[0]), int(box[1]), int(box[2]), int(box[3])
                         cv2.rectangle(img_pred_vis, (xmin, ymin), (xmax, ymax), class_to_colors[label - 1], 1)
+                        colored_mask[mask] = np.random.randint(0, 255, 3)
+                img_pred_vis = cv2.addWeighted(img_pred_vis, 0.8, colored_mask, 0.2, 0)
 
                 filename_pred_box = os.path.join(output_dir, f"image_{image_id_val}_pred_box_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
                 cv2.imwrite(filename_pred_box, img_pred_vis)

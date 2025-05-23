@@ -9,11 +9,13 @@ torchvision.disable_beta_transforms_warning()
 
 import torchvision.transforms.v2 as T
 import torchvision.transforms.v2.functional as F
+from torchvision.transforms.functional import InterpolationMode
+import torchvision.transforms as _transforms
 
 import PIL
 import PIL.Image
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union, Sequence
 
 from .._misc import convert_to_tv_tensor, _boxes_keys
 from .._misc import Image, Video, Mask, BoundingBoxes
@@ -25,7 +27,7 @@ from ...core import register
 RandomPhotometricDistort = register()(T.RandomPhotometricDistort)
 RandomZoomOut = register()(T.RandomZoomOut)
 RandomHorizontalFlip = register()(T.RandomHorizontalFlip)
-Resize = register()(T.Resize)
+# Resize = register()(T.Resize)
 # ToImageTensor = register()(T.ToImageTensor)
 # ConvertDtype = register()(T.ConvertDtype)
 # PILToTensor = register()(T.PILToTensor)
@@ -42,6 +44,59 @@ class EmptyTransform(T.Transform):
     def forward(self, *inputs):
         inputs = inputs if len(inputs) > 1 else inputs[0]
         return inputs
+
+@register(name='Resize')
+class Resize(T.Transform):
+    _v1_transform_cls = _transforms.Resize
+
+    def __init__(
+        self,
+        size: Union[int, Sequence[int], None],
+        interpolation: Union[InterpolationMode, int] = InterpolationMode.BILINEAR,
+        max_size: Optional[int] = None,
+        antialias: Optional[bool] = True,
+    ) -> None:
+        super().__init__()
+
+        if isinstance(size, int):
+            size = [size]
+        elif isinstance(size, Sequence) and len(size) in {1, 2}:
+            size = list(size)
+        elif size is None:
+            if not isinstance(max_size, int):
+                raise ValueError(f"max_size must be an integer when size is None, but got {max_size} instead.")
+        else:
+            raise ValueError(
+                f"size can be an integer, a sequence of one or two integers, or None, but got {size} instead."
+            )
+        self.size = size
+
+        self.interpolation = interpolation
+        self.max_size = max_size
+        self.antialias = antialias
+
+    def transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
+        if isinstance(inpt, Mask):
+            if inpt.dtype != torch.float32:
+                inpt = inpt.to(torch.float32)
+            mask = self._call_kernel(
+                F.resize,
+                inpt,
+                self.size,
+                interpolation=InterpolationMode.BILINEAR,
+                max_size=self.max_size,
+                antialias=True,
+            )
+            return mask
+        else:
+            return self._call_kernel(
+                F.resize,
+                inpt,
+                self.size,
+                interpolation=self.interpolation,
+                max_size=self.max_size,
+                antialias=self.antialias,
+            )
 
 
 @register()

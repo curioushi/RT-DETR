@@ -14,6 +14,7 @@ torchvision.disable_beta_transforms_warning()
 
 from PIL import Image 
 from faster_coco_eval.core import mask as coco_mask
+from pycocotools import mask as pycoco_mask_api
 
 from ._dataset import DetDataset
 from .._misc import convert_to_tv_tensor
@@ -106,6 +107,18 @@ def convert_coco_poly_to_mask(segmentations, height, width):
     return masks
 
 
+def convert_coco_rle_to_masks(rle_segmentations_list, height, width):
+    if not rle_segmentations_list:
+        return torch.zeros((0, height, width), dtype=torch.uint8)
+
+    masks_np = pycoco_mask_api.decode(rle_segmentations_list)
+    if masks_np.ndim == 2:
+        masks_np = masks_np[..., None]
+
+    masks_torch = torch.as_tensor(masks_np, dtype=torch.uint8)
+    return masks_torch.permute(2, 0, 1)
+
+
 class ConvertCocoPolysToMask(object):
     def __init__(self, return_masks=False):
         self.return_masks = return_masks
@@ -160,7 +173,7 @@ class ConvertCocoPolysToMask(object):
 
         if self.return_masks:
             segmentations = [obj["segmentation"] for obj in anno]
-            masks = convert_coco_poly_to_mask(segmentations, h, w)
+            masks = convert_coco_rle_to_masks(segmentations, h, w)
 
         keypoints = None
         if anno and "keypoints" in anno[0]:
