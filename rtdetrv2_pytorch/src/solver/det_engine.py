@@ -214,6 +214,7 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
 
                 filename_pred_box = os.path.join(output_dir, f"image_{image_id_val}_pred_box_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
                 cv2.imwrite(filename_pred_box, img_pred_vis)
+                cv2.imwrite(os.path.join(output_dir, "latest.png"), img_pred_vis)
         if coco_evaluator is not None:
             coco_evaluator.update(res)
 
