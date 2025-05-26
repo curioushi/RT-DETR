@@ -46,9 +46,7 @@ class RTDETRPostProcessor(nn.Module):
     
     # def forward(self, outputs, orig_target_sizes):
     def forward(self, outputs, orig_target_sizes: torch.Tensor):
-        logits, boxes, quads, weights, masks = outputs['pred_logits'], outputs['pred_boxes'], outputs['pred_quads'], outputs['pred_weights'], outputs['pred_masks']
-        bs, nq, h, w = masks.shape
-        masks = masks.flatten(2)
+        logits, boxes, quads, weights, depths = outputs['pred_logits'], outputs['pred_boxes'], outputs['pred_quads'], outputs['pred_weights'], outputs['pred_depths']
         # orig_target_sizes = torch.stack([t["orig_size"] for t in targets], dim=0)        
 
         bbox_pred = torchvision.ops.box_convert(boxes, in_fmt='cxcywh', out_fmt='xyxy')
@@ -64,7 +62,6 @@ class RTDETRPostProcessor(nn.Module):
             boxes = bbox_pred.gather(dim=1, index=index.unsqueeze(-1).repeat(1, 1, bbox_pred.shape[-1]))
             quads = quads.gather(dim=1, index=index.unsqueeze(-1).repeat(1, 1, quads.shape[-1]))
             weights = weights.gather(dim=1, index=index.unsqueeze(-1).repeat(1, 1, weights.shape[-1]))
-            masks = masks.gather(dim=1, index=index.unsqueeze(-1).repeat(1, 1, masks.shape[-1]))
         else:
             scores = F.softmax(logits)[:, :, :-1]
             scores, labels = scores.max(dim=-1)
@@ -74,12 +71,10 @@ class RTDETRPostProcessor(nn.Module):
                 boxes = torch.gather(boxes, dim=1, index=index.unsqueeze(-1).tile(1, 1, boxes.shape[-1]))
                 quads = torch.gather(quads, dim=1, index=index.unsqueeze(-1).tile(1, 1, quads.shape[-1]))
                 weights = torch.gather(weights, dim=1, index=index.unsqueeze(-1).tile(1, 1, weights.shape[-1]))
-                masks = torch.gather(masks, dim=1, index=index.unsqueeze(-1).tile(1, 1, masks.shape[-1]))
         
-        masks = masks.reshape(bs, nq, h, w)
         # TODO for onnx export
         if self.deploy_mode:
-            return labels, boxes, scores, quads, weights, masks
+            return labels, boxes, scores, quads, weights, depths
 
         # TODO
         if self.remap_mscoco_category:
@@ -88,8 +83,8 @@ class RTDETRPostProcessor(nn.Module):
                 .to(boxes.device).reshape(labels.shape)
 
         results = []
-        for lab, box, sco, quad, weight, mask in zip(labels, boxes, scores, quads, weights, masks):
-            result = dict(labels=lab, boxes=box, scores=sco, quads=quad, weights=weight, masks=mask)
+        for lab, box, sco, quad, weight, depth in zip(labels, boxes, scores, quads, weights, depths):
+            result = dict(labels=lab, boxes=box, scores=sco, quads=quad, weights=weight, depth=depth)
             results.append(result)
         
         return results
