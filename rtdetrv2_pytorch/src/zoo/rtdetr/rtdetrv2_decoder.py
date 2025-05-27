@@ -606,7 +606,49 @@ class RTDETRTransformerv2(nn.Module):
             index=topk_ind.unsqueeze(-1).repeat(1, 1, memory.shape[-1]))
 
         return topk_memory, topk_logits, topk_coords
+    
+    def _depth_to_xyz(self, depth: torch.Tensor, targets: List[dict]):
+        camera_Ks = torch.stack([t['camera_Ks'][0] for t in targets])
+        orig_sizes = torch.stack([t['orig_size'] for t in targets])
+        fx, cx, fy, cy = camera_Ks[:, 0], camera_Ks[:, 1], camera_Ks[:, 2], camera_Ks[:, 3]
+        ws, hs = orig_sizes[:, 0], orig_sizes[:, 1]
+        fx = fx / ws
+        cx = cx / ws
+        fy = fy / hs
+        cy = cy / hs
 
+        b, h, w = depth.shape
+        device = depth.device
+
+        # Create v and u coordinate maps
+        v_coords = (torch.arange(h, dtype=depth.dtype, device=device) / h).unsqueeze(1).expand(h, w)
+        u_coords = (torch.arange(w, dtype=depth.dtype, device=device) / w).unsqueeze(0).expand(h, w)
+
+        # Reshape camera parameters for broadcasting
+        # fx, cx, fy, cy have shape (b), reshape to (b, 1, 1)
+        fx_exp = fx.view(b, 1, 1)
+        cx_exp = cx.view(b, 1, 1)
+        fy_exp = fy.view(b, 1, 1)
+        cy_exp = cy.view(b, 1, 1)
+
+        # Expand u_coords and v_coords to (b, h, w) for broadcasting
+        u_coords_exp = u_coords.unsqueeze(0).expand(b, h, w)
+        v_coords_exp = v_coords.unsqueeze(0).expand(b, h, w)
+        
+        # Calculate normalized coordinates
+        x_normalized = (u_coords_exp - cx_exp) / fx_exp
+        y_normalized = (v_coords_exp - cy_exp) / fy_exp
+
+        # Calculate 3D coordinates in camera frame
+        depth = torch.exp(depth) - 1
+        x_cam = x_normalized * depth
+        y_cam = y_normalized * depth
+        z_cam = depth # Depth is the z-coordinate
+
+        # Stack to form xyz_mapping (b, 3, h, w)
+        xyz_mapping = torch.stack([x_cam, y_cam, z_cam], dim=1)
+        
+        return xyz_mapping
 
     def forward(self, feats, targets=None):
         # input projection and embedding
@@ -626,6 +668,7 @@ class RTDETRTransformerv2(nn.Module):
         out_featmap = fpn_inner_outs[0]
         mask_embedding = self.dec_mask_embed(out_featmap.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
         out_depth = self.dec_depth_head(out_featmap.permute(0, 2, 3, 1)).squeeze(-1)
+        xyz_mapping = self._depth_to_xyz(out_depth, targets)
 
         # prepare denoising training
         if self.training and self.num_denoising > 0:
@@ -664,13 +707,24 @@ class RTDETRTransformerv2(nn.Module):
             dn_out_quads, out_quads = torch.split(out_quads, dn_meta['dn_num_split'], dim=2)
             dn_out_weights, out_weights = torch.split(out_weights, dn_meta['dn_num_split'], dim=2)
             dn_out_masks, out_masks = torch.split(out_masks, dn_meta['dn_num_split'], dim=1)
-
+        
+        xyz_points = xyz_mapping.flatten(2)  # b, 3, h*w
+        query_weights = F.sigmoid(out_masks).flatten(2)  # b, nq, h*w
+        query_weights_sum = query_weights.sum(dim=-1) # b, nq
+        query_centers = (xyz_points.unsqueeze(1) * query_weights.unsqueeze(2)).sum(dim=-1) / query_weights_sum.unsqueeze(-1) # b, nq, 3
+        query_centered_points = xyz_points.unsqueeze(1) - query_centers.unsqueeze(-1) # b, nq, 3, h*w
+        weighted_query_centered_points = query_centered_points * query_weights.unsqueeze(-2) # b, nq, 3, h*w
+        query_covariance = torch.matmul(weighted_query_centered_points, weighted_query_centered_points.transpose(-2, -1)) / query_weights_sum.unsqueeze(-1).unsqueeze(-1)
+        query_covariance = query_covariance * 0.75 # magic number
+        
         out = {'pred_logits': out_logits[-1], 
                'pred_boxes': out_bboxes[-1], 
                'pred_quads': out_quads[-1], 
                'pred_weights': out_weights[-1],
                'pred_depths': out_depth,
-               'pred_masks': out_masks
+               'pred_masks': out_masks,
+               'pred_points': query_centers,
+               'pred_covariance': query_covariance,
                }
 
         if self.training and self.aux_loss:

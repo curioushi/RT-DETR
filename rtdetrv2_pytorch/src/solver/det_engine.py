@@ -124,7 +124,7 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
         samples = samples.to(device)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
-        outputs = model(samples)
+        outputs = model(samples, targets=targets)
 
         # TODO (lyuwenyu), fix dataset converted using `convert_to_coco_api`?
         orig_target_sizes = torch.stack([t["orig_size"] for t in targets], dim=0)
@@ -163,6 +163,14 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
                 gt_labels_tensor = target['labels']
                 gt_masks_tensor = target['masks']
                 gt_depth_tensor = (torch.exp(target['depth']) - 1).squeeze(0)
+                fx, cx, fy, cy = target['camera_Ks'][0].cpu().detach().numpy()
+                w, h = target['orig_size'].cpu().detach().numpy()
+                fx = fx / w * 640
+                cx = cx / w * 640
+                fy = fy / h * 640
+                cy = cy / h * 640
+                camera_K_np = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])
+
 
                 gt_boxes_np = gt_boxes_tensor.cpu().detach().numpy()
                 gt_labels_np = gt_labels_tensor.cpu().detach().numpy()
@@ -202,6 +210,8 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
                 pred_depth_tensor = output['depth']
                 pred_depth_tensor = torch.exp(pred_depth_tensor) - 1
                 pred_depth_tensor = F.interpolate(pred_depth_tensor.unsqueeze(0).unsqueeze(0), size=(640, 640), mode='nearest').squeeze(0).squeeze(0)
+                pred_centers_tensor = output['centers']
+                pred_covariances_tensor = output['covariances']
 
                 pred_boxes_np = pred_boxes_tensor.cpu().detach().numpy() / 1024 * 640
                 pred_scores_np = pred_scores_tensor.cpu().detach().numpy()
@@ -210,6 +220,8 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
                 pred_depth_np = pred_depth_tensor.cpu().detach().numpy()
                 min_depth, max_depth = pred_depth_np.min(), pred_depth_np.max()
                 pred_depth_np = ((pred_depth_np - min_depth) / (max_depth - min_depth) * 255).astype(np.uint8)
+                pred_centers_np = pred_centers_tensor.cpu().detach().numpy()
+                pred_covariances_np = pred_covariances_tensor.cpu().detach().numpy()
 
                 score_thresh = 0.6
                 colored_mask = img_pred_vis.copy()
@@ -218,9 +230,28 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
                         box = pred_boxes_np[i]
                         label = pred_labels_np[i]
                         mask = pred_masks_np[i] > 0.5
+                        center = pred_centers_np[i]
+                        covariance = pred_covariances_np[i]
+                        eigenvalues, eigenvectors = np.linalg.eig(covariance)
+                        sort_indices = np.argsort(eigenvalues)[::-1]
+                        eigenvalues = eigenvalues[sort_indices]
+                        eigenvectors = eigenvectors[:, sort_indices]
+                        major_axis = eigenvectors[:, 0]
+                        minor_axis = eigenvectors[:, 1]
+                        major_scale = 2 * np.sqrt(eigenvalues[0])
+                        minor_scale = 2 * np.sqrt(eigenvalues[1])
+                        quads = np.array([
+                            center + major_scale * major_axis + minor_scale * minor_axis,
+                            center - major_scale * major_axis + minor_scale * minor_axis,
+                            center - major_scale * major_axis - minor_scale * minor_axis,
+                            center + major_scale * major_axis - minor_scale * minor_axis,
+                        ])
+                        quads = quads @ camera_K_np.T
+                        quads = quads[:, :2] / quads[:, 2:3]
+                        cv2.polylines(img_pred_vis, [quads.astype(np.int32)], True, class_to_colors[label - 1], 1)
 
-                        xmin, ymin, xmax, ymax = int(box[0]), int(box[1]), int(box[2]), int(box[3])
-                        cv2.rectangle(img_pred_vis, (xmin, ymin), (xmax, ymax), class_to_colors[label - 1], 1)
+                        # xmin, ymin, xmax, ymax = int(box[0]), int(box[1]), int(box[2]), int(box[3])
+                        # cv2.rectangle(img_pred_vis, (xmin, ymin), (xmax, ymax), class_to_colors[label - 1], 1)
                         colored_mask[mask] = np.random.randint(0, 255, 3)
                 img_pred_vis = cv2.addWeighted(img_pred_vis, 0.8, colored_mask, 0.2, 0)
 
