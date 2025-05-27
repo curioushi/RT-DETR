@@ -249,12 +249,12 @@ class TransformerDecoder(nn.Module):
                 ref_points_unact,
                 memory,
                 memory_spatial_shapes,
-                # mask_embeddings,
+                mask_embedding,
                 bbox_head,
                 score_head,
                 quad_head,
                 weights_head,
-                # mask_head,
+                mask_head,
                 query_pos_head,
                 attn_mask=None,
                 memory_mask=None):
@@ -305,10 +305,10 @@ class TransformerDecoder(nn.Module):
             ref_quads = inter_ref_quads
             ref_quads_detach = inter_ref_quads.detach()
         
-        # mask_query = mask_head(output)
-        # dec_out_masks = torch.einsum('bqc,bchw->bqhw', mask_query, mask_embeddings)
+        mask_query = mask_head(output)
+        dec_out_masks = torch.einsum('bqc,bchw->bqhw', mask_query, mask_embedding)
 
-        return torch.stack(dec_out_bboxes), torch.stack(dec_out_logits), torch.stack(dec_out_quads), torch.stack(dec_out_weights)
+        return torch.stack(dec_out_bboxes), torch.stack(dec_out_logits), torch.stack(dec_out_quads), torch.stack(dec_out_weights), dec_out_masks
 
 
 @register()
@@ -426,6 +426,7 @@ class RTDETRTransformerv2(nn.Module):
             MLP(hidden_dim, hidden_dim, 4, 3) for _ in range(num_layers)
         ])
         self.dec_mask_head = MLP(hidden_dim, hidden_dim, hidden_dim, 3)
+        self.dec_mask_embed = MLP(hidden_dim, hidden_dim, hidden_dim, 3)
         self.dec_depth_head = MLP(hidden_dim, hidden_dim, 1, 3)
 
         # init encoder output anchors and valid_mask
@@ -622,8 +623,9 @@ class RTDETRTransformerv2(nn.Module):
             upsample_feat = F.interpolate(feat_heigh, scale_factor=2., mode='nearest')
             inner_out = self.fpn_blocks[conv_idx](torch.concat([upsample_feat, feat_low], dim=1))
             fpn_inner_outs.insert(0, inner_out)
-        depth_embeddings = fpn_inner_outs[0]
-        out_depth = self.dec_depth_head(depth_embeddings.permute(0, 2, 3, 1)).squeeze(-1)
+        out_featmap = fpn_inner_outs[0]
+        mask_embedding = self.dec_mask_embed(out_featmap.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+        out_depth = self.dec_depth_head(out_featmap.permute(0, 2, 3, 1)).squeeze(-1)
 
         # prepare denoising training
         if self.training and self.num_denoising > 0:
@@ -642,17 +644,17 @@ class RTDETRTransformerv2(nn.Module):
             self._get_decoder_input(memory, spatial_shapes, denoising_logits, denoising_bbox_unact)
 
         # decoder
-        out_bboxes, out_logits, out_quads, out_weights = self.decoder(
+        out_bboxes, out_logits, out_quads, out_weights, out_masks = self.decoder(
             init_ref_contents,
             init_ref_points_unact,
             memory,
             spatial_shapes,
-            # depth_embeddings,
+            mask_embedding,
             self.dec_bbox_head,
             self.dec_score_head,
             self.dec_quad_head,
             self.dec_weights_head,
-            # self.dec_mask_head,
+            self.dec_mask_head,
             self.query_pos_head,
             attn_mask=attn_mask)
 
@@ -661,14 +663,14 @@ class RTDETRTransformerv2(nn.Module):
             dn_out_logits, out_logits = torch.split(out_logits, dn_meta['dn_num_split'], dim=2)
             dn_out_quads, out_quads = torch.split(out_quads, dn_meta['dn_num_split'], dim=2)
             dn_out_weights, out_weights = torch.split(out_weights, dn_meta['dn_num_split'], dim=2)
-            # dn_out_masks, out_masks = torch.split(out_masks, dn_meta['dn_num_split'], dim=1)
+            dn_out_masks, out_masks = torch.split(out_masks, dn_meta['dn_num_split'], dim=1)
 
         out = {'pred_logits': out_logits[-1], 
                'pred_boxes': out_bboxes[-1], 
                'pred_quads': out_quads[-1], 
                'pred_weights': out_weights[-1],
                'pred_depths': out_depth,
-            #    'pred_masks': out_masks
+               'pred_masks': out_masks
                }
 
         if self.training and self.aux_loss:
