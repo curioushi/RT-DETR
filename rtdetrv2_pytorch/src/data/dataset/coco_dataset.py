@@ -201,6 +201,31 @@ class ConvertCocoPolysToMask(object):
                 custom_camera_Ks.append([camera_K[0][0], camera_K[0][2], camera_K[1][1], camera_K[1][2]])
             custom_camera_Ks = torch.as_tensor(custom_camera_Ks, dtype=torch.float32).reshape(-1, 4)
 
+        custom_centers = None
+        custom_covariances = None
+        if anno and "pose" in anno[0] and "size" in anno[0] and "support_vector" in anno[0]:
+            custom_centers = []
+            custom_covariances = []
+            for obj in anno:
+                pose = np.array(obj["pose"])
+                size = np.array(obj["size"] + [0])
+                support_vector = np.array(obj["support_vector"])
+                shrink_ratio = 1 - support_vector
+                rotation = pose[:3, :3]
+                center = pose[:3, 3]
+                x_axis = pose[:3, 0]
+                y_axis = pose[:3, 1]
+                center = center + x_axis * size[0] * shrink_ratio[0]/2 - x_axis * size[0] * shrink_ratio[1]/2
+                center = center + y_axis * size[1] * shrink_ratio[2]/2 - y_axis * size[1] * shrink_ratio[3]/2
+                size = np.array([size[0] * (1 - shrink_ratio[0] - shrink_ratio[1]),
+                                 size[1] * (1 - shrink_ratio[2] - shrink_ratio[3]),
+                                 size[2]])
+                covariance = rotation @ np.diag((size/4) ** 2) @ rotation.T
+                custom_centers.append(center)
+                custom_covariances.append(covariance)
+            custom_centers = torch.as_tensor(custom_centers, dtype=torch.float32).reshape(-1, 3)
+            custom_covariances = torch.as_tensor(custom_covariances, dtype=torch.float32).reshape(-1, 3, 3)
+
         if self.return_masks:
             segmentations = [obj["segmentation"] for obj in anno]
             masks = convert_coco_rle_to_masks(segmentations, h, w)
@@ -241,6 +266,10 @@ class ConvertCocoPolysToMask(object):
             target["weights"] = custom_weights
         if custom_camera_Ks is not None:
             target["camera_Ks"] = custom_camera_Ks
+        if custom_centers is not None:
+            target["centers"] = custom_centers
+        if custom_covariances is not None:
+            target["covariances"] = custom_covariances
 
         # for conversion to coco api
         area = torch.tensor([obj["area"] for obj in anno])

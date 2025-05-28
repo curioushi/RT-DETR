@@ -109,6 +109,24 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     print("Averaged stats:", metric_logger)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
+def center_covariance_to_2d_quads(center, covariance, camera_K):
+    eigenvalues, eigenvectors = np.linalg.eig(covariance)
+    sort_indices = np.argsort(eigenvalues)[::-1]
+    eigenvalues = eigenvalues[sort_indices]
+    eigenvectors = eigenvectors[:, sort_indices]
+    major_axis = eigenvectors[:, 0]
+    minor_axis = eigenvectors[:, 1]
+    major_scale = 2 * np.sqrt(eigenvalues[0])
+    minor_scale = 2 * np.sqrt(eigenvalues[1])
+    quads = np.array([
+        center + major_scale * major_axis + minor_scale * minor_axis,
+        center - major_scale * major_axis + minor_scale * minor_axis,
+        center - major_scale * major_axis - minor_scale * minor_axis,
+        center + major_scale * major_axis - minor_scale * minor_axis,
+    ])
+    quads = quads @ camera_K.T
+    quads = quads[:, :2] / quads[:, 2:3]
+    return quads
 
 @torch.no_grad()
 def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, data_loader, coco_evaluator: CocoEvaluator, device, output_dir: str):
@@ -163,6 +181,8 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
                 gt_labels_tensor = target['labels']
                 gt_masks_tensor = target['masks']
                 gt_depth_tensor = (torch.exp(target['depth']) - 1).squeeze(0)
+                gt_centers_tensor = target['centers']
+                gt_covariances_tensor = target['covariances']
                 fx, cx, fy, cy = target['camera_Ks'][0].cpu().detach().numpy()
                 w, h = target['orig_size'].cpu().detach().numpy()
                 fx = fx / w * 640
@@ -176,6 +196,8 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
                 gt_labels_np = gt_labels_tensor.cpu().detach().numpy()
                 gt_masks_np = gt_masks_tensor.cpu().detach().numpy()
                 gt_depth_np = gt_depth_tensor.cpu().detach().numpy()
+                gt_centers_np = gt_centers_tensor.cpu().detach().numpy()
+                gt_covariances_np = gt_covariances_tensor.cpu().detach().numpy()
                 min_depth, max_depth = gt_depth_np.min(), gt_depth_np.max()
                 gt_depth_np = ((gt_depth_np - min_depth) / (max_depth - min_depth) * 255).astype(np.uint8)
 
@@ -187,11 +209,13 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
 
                 colored_mask = img_gt_vis.copy()
                 for i in range(gt_boxes_np.shape[0]):
-                    x1, y1, x2, y2 = gt_boxes_np[i].astype(np.int32)
                     label = gt_labels_np[i]
                     mask = gt_masks_np[i] > 0.5
+                    quads = center_covariance_to_2d_quads(gt_centers_np[i], gt_covariances_np[i], camera_K_np)
+                    cv2.polylines(img_gt_vis, [quads.astype(np.int32)], True, class_to_colors[label], 1)
 
-                    cv2.rectangle(img_gt_vis, (x1, y1), (x2, y2), class_to_colors[label], 1)
+                    # x1, y1, x2, y2 = gt_boxes_np[i].astype(np.int32)
+                    # cv2.rectangle(img_gt_vis, (x1, y1), (x2, y2), class_to_colors[label], 1)
                     colored_mask[mask] = np.random.randint(0, 255, 3)
                 img_gt_vis = cv2.addWeighted(img_gt_vis, 0.8, colored_mask, 0.2, 0)
 
@@ -230,24 +254,7 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
                         box = pred_boxes_np[i]
                         label = pred_labels_np[i]
                         mask = pred_masks_np[i] > 0.5
-                        center = pred_centers_np[i]
-                        covariance = pred_covariances_np[i]
-                        eigenvalues, eigenvectors = np.linalg.eig(covariance)
-                        sort_indices = np.argsort(eigenvalues)[::-1]
-                        eigenvalues = eigenvalues[sort_indices]
-                        eigenvectors = eigenvectors[:, sort_indices]
-                        major_axis = eigenvectors[:, 0]
-                        minor_axis = eigenvectors[:, 1]
-                        major_scale = 2 * np.sqrt(eigenvalues[0])
-                        minor_scale = 2 * np.sqrt(eigenvalues[1])
-                        quads = np.array([
-                            center + major_scale * major_axis + minor_scale * minor_axis,
-                            center - major_scale * major_axis + minor_scale * minor_axis,
-                            center - major_scale * major_axis - minor_scale * minor_axis,
-                            center + major_scale * major_axis - minor_scale * minor_axis,
-                        ])
-                        quads = quads @ camera_K_np.T
-                        quads = quads[:, :2] / quads[:, 2:3]
+                        quads = center_covariance_to_2d_quads(pred_centers_np[i], pred_covariances_np[i], camera_K_np)
                         cv2.polylines(img_pred_vis, [quads.astype(np.int32)], True, class_to_colors[label - 1], 1)
 
                         # xmin, ymin, xmax, ymax = int(box[0]), int(box[1]), int(box[2]), int(box[3])

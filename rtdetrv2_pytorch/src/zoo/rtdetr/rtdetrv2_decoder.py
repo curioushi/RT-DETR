@@ -35,6 +35,38 @@ class MLP(nn.Module):
             x = self.act(layer(x)) if i < self.num_layers - 1 else layer(x)
         return x
 
+class PointNet(nn.Module):
+    def __init__(self, input_dim=3, hidden_dim=(32, 64, 128)):
+        super(PointNet, self).__init__()
+        assert len(hidden_dim) == 3, "hidden_dim must be a tuple of length 3"
+        self.mlp = nn.Sequential(
+            nn.Conv1d(input_dim, hidden_dim[0], kernel_size=1),
+            nn.GELU(),
+            nn.Conv1d(hidden_dim[0], hidden_dim[1], kernel_size=1),
+            nn.GELU(),
+            nn.Conv1d(hidden_dim[1], hidden_dim[2], kernel_size=1),
+            nn.GELU(),
+        )
+        self.center_head = nn.Linear(hidden_dim[2], 3)
+        self.covariance_head = nn.Linear(hidden_dim[2], 6)
+
+    def forward(self, query_points, query_masks):
+        """
+        query_points: B x NQ x 3 x HW
+        query_masks: B x NQ x HW
+        """
+        B, NQ, _, HW = query_points.shape
+        query_points = query_points.reshape(B*NQ, 3, HW)
+        query_masks = query_masks.reshape(B*NQ, HW)
+        x = self.mlp(query_points) # B*NQ, 256, HW
+        x = x * query_masks.unsqueeze(1)
+        x = F.max_pool1d(x, int(x.size(2))).squeeze(-1) # B*NQ, 256
+        centers = self.center_head(x) # B*NQ, 3
+        covariances = self.covariance_head(x) # B*NQ, 6
+        centers = centers.reshape(B, NQ, 3)
+        covariances = covariances.reshape(B, NQ, 6)
+        return centers, covariances
+
 
 class MSDeformableAttention(nn.Module):
     def __init__(
@@ -428,6 +460,7 @@ class RTDETRTransformerv2(nn.Module):
         self.dec_mask_head = MLP(hidden_dim, hidden_dim, hidden_dim, 3)
         self.dec_mask_embed = MLP(hidden_dim, hidden_dim, hidden_dim, 3)
         self.dec_depth_head = MLP(hidden_dim, hidden_dim, 1, 3)
+        self.dec_pointnet = PointNet(input_dim=3, hidden_dim=(32, 64, 128))
 
         # init encoder output anchors and valid_mask
         if self.eval_spatial_size:
@@ -716,6 +749,7 @@ class RTDETRTransformerv2(nn.Module):
         weighted_query_centered_points = query_centered_points * query_weights.unsqueeze(-2) # b, nq, 3, h*w
         query_covariance = torch.matmul(weighted_query_centered_points, weighted_query_centered_points.transpose(-2, -1)) / query_weights_sum.unsqueeze(-1).unsqueeze(-1)
         query_covariance = query_covariance * 0.75 # magic number
+        query_centers, query_covariance = self.dec_pointnet(query_centered_points, query_weights)
         
         out = {'pred_logits': out_logits[-1], 
                'pred_boxes': out_bboxes[-1], 
