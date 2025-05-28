@@ -36,7 +36,7 @@ class MLP(nn.Module):
         return x
 
 class PointNet(nn.Module):
-    def __init__(self, input_dim=3, hidden_dim=(32, 64, 128)):
+    def __init__(self, input_dim=3, hidden_dim=(32, 64, 128), featmap_dim=256):
         super(PointNet, self).__init__()
         assert len(hidden_dim) == 3, "hidden_dim must be a tuple of length 3"
         self.mlp = nn.Sequential(
@@ -47,20 +47,33 @@ class PointNet(nn.Module):
             nn.Conv1d(hidden_dim[1], hidden_dim[2], kernel_size=1),
             nn.GELU(),
         )
-        self.center_head = nn.Linear(hidden_dim[2], 3)
-        self.covariance_head = nn.Linear(hidden_dim[2], 6)
+        self.center_head = nn.Linear(2 * hidden_dim[2], 3)
+        self.covariance_head = nn.Linear(2 * hidden_dim[2], 6)
+        self.featmap_head = nn.Sequential(
+            nn.Conv1d(featmap_dim, hidden_dim[2], kernel_size=1),
+            nn.GELU(),
+        )
 
-    def forward(self, query_points, query_masks):
+        nn.init.constant_(self.center_head.weight, 0)
+        nn.init.constant_(self.covariance_head.weight, 0)
+        nn.init.constant_(self.center_head.bias, 0)
+        nn.init.constant_(self.covariance_head.bias, 0)
+
+    def forward(self, query_points, query_masks, featmap):
         """
-        query_points: B x NQ x 3 x HW
-        query_masks: B x NQ x HW
+        query_points: B x NQ x 3 x NP
+        query_masks: B x NQ x NP
+        featmap: B x NQ x featmap_dim x NP
         """
-        B, NQ, _, HW = query_points.shape
-        query_points = query_points.reshape(B*NQ, 3, HW)
-        query_masks = query_masks.reshape(B*NQ, HW)
-        x = self.mlp(query_points) # B*NQ, 256, HW
+        B, NQ, _, NP = query_points.shape
+        featmap_dim = featmap.shape[2]
+        query_points = query_points.reshape(-1, 3, NP)
+        query_masks = query_masks.reshape(-1, NP)
+        featmap = self.featmap_head(featmap.reshape(-1, featmap_dim, NP)) # B*NQ, C, NP
+        x = self.mlp(query_points) # B*NQ, C, NP
+        x = torch.cat([x, featmap], dim=1) # B*NQ, 2*C, NP
         x = x * query_masks.unsqueeze(1)
-        x = F.max_pool1d(x, int(x.size(2))).squeeze(-1) # B*NQ, 256
+        x = F.max_pool1d(x, int(x.size(2))).squeeze(-1) # B*NQ, 2*C
         centers = self.center_head(x) # B*NQ, 3
         covariances = self.covariance_head(x) # B*NQ, 6
         centers = centers.reshape(B, NQ, 3)
@@ -460,7 +473,7 @@ class RTDETRTransformerv2(nn.Module):
         self.dec_mask_head = MLP(hidden_dim, hidden_dim, hidden_dim, 3)
         self.dec_mask_embed = MLP(hidden_dim, hidden_dim, hidden_dim, 3)
         self.dec_depth_head = MLP(hidden_dim, hidden_dim, 1, 3)
-        self.dec_pointnet = PointNet(input_dim=3, hidden_dim=(32, 64, 128))
+        self.dec_pointnet = PointNet(input_dim=3, hidden_dim=(16, 32, 64))
 
         # init encoder output anchors and valid_mask
         if self.eval_spatial_size:
@@ -701,7 +714,6 @@ class RTDETRTransformerv2(nn.Module):
         out_featmap = fpn_inner_outs[0]
         mask_embedding = self.dec_mask_embed(out_featmap.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
         out_depth = self.dec_depth_head(out_featmap.permute(0, 2, 3, 1)).squeeze(-1)
-        xyz_mapping = self._depth_to_xyz(out_depth, targets)
 
         # prepare denoising training
         if self.training and self.num_denoising > 0:
@@ -741,15 +753,21 @@ class RTDETRTransformerv2(nn.Module):
             dn_out_weights, out_weights = torch.split(out_weights, dn_meta['dn_num_split'], dim=2)
             dn_out_masks, out_masks = torch.split(out_masks, dn_meta['dn_num_split'], dim=1)
         
-        xyz_points = xyz_mapping.flatten(2)  # b, 3, h*w
-        query_weights = F.sigmoid(out_masks).flatten(2)  # b, nq, h*w
+        topk = 1000
+        nq = out_masks.shape[1]
+        nc = out_featmap.shape[1]
+        xyz_points = self._depth_to_xyz(out_depth.detach(), targets).flatten(2) # b, 3, h*w
+        query_weights = F.sigmoid(out_masks.detach()).flatten(2)  # b, nq, h*w
+        query_weights, top_k_indices = torch.topk(query_weights, k=topk, dim=-1) # b, nq, topk
+        xyz_points = torch.gather(xyz_points.unsqueeze(1).expand(-1, nq, -1, -1), dim=-1, 
+                                  index=top_k_indices.unsqueeze(2).expand(-1, -1, 3, -1)) # b, nq, 3, topk
+        out_featmap = torch.gather(out_featmap.flatten(2).unsqueeze(1).expand(-1, nq, -1, -1), dim=-1,
+                                   index=top_k_indices.unsqueeze(2).expand(-1, -1, nc, -1)) # b, nq, c, topk
         query_weights_sum = query_weights.sum(dim=-1) # b, nq
-        query_centers = (xyz_points.unsqueeze(1) * query_weights.unsqueeze(2)).sum(dim=-1) / query_weights_sum.unsqueeze(-1) # b, nq, 3
-        query_centered_points = xyz_points.unsqueeze(1) - query_centers.unsqueeze(-1) # b, nq, 3, h*w
-        weighted_query_centered_points = query_centered_points * query_weights.unsqueeze(-2) # b, nq, 3, h*w
-        query_covariance = torch.matmul(weighted_query_centered_points, weighted_query_centered_points.transpose(-2, -1)) / query_weights_sum.unsqueeze(-1).unsqueeze(-1)
-        query_covariance = query_covariance * 0.75 # magic number
-        query_centers, query_covariance = self.dec_pointnet(query_centered_points, query_weights)
+        query_centers = (xyz_points * query_weights.unsqueeze(2)).sum(dim=-1) / query_weights_sum.unsqueeze(-1) # b, nq, 3
+        query_centered_points = xyz_points - query_centers.unsqueeze(-1) # b, nq, 3, topk
+        center_offset, query_covariance = self.dec_pointnet(query_centered_points, query_weights, out_featmap)
+        query_centers = query_centers + center_offset
         
         out = {'pred_logits': out_logits[-1], 
                'pred_boxes': out_bboxes[-1], 
@@ -757,8 +775,8 @@ class RTDETRTransformerv2(nn.Module):
                'pred_weights': out_weights[-1],
                'pred_depths': out_depth,
                'pred_masks': out_masks,
-               'pred_points': query_centers,
-               'pred_covariance': query_covariance,
+               'pred_centers': query_centers,
+               'pred_covariances': query_covariance,
                }
 
         if self.training and self.aux_loss:

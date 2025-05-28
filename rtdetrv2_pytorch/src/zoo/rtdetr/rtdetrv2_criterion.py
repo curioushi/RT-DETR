@@ -263,6 +263,23 @@ class RTDETRCriterionv2(nn.Module):
             return {'loss_depth': loss_depth.sum() / (valid_depth_mask.sum() + 1e-7)}
         else:
             return {}
+    
+    def loss_quads3d(self, outputs, targets, indices, num_boxes, **kwargs):
+        assert 'pred_centers' in outputs, "'pred_centers' not found in outputs."
+        assert 'pred_covariances' in outputs, "'pred_covariances' not found in outputs."
+        
+        idx = self._get_src_permutation_idx(indices)
+        src_centers = outputs['pred_centers'][idx]
+        src_covariances = outputs['pred_covariances'][idx]
+
+        target_centers = torch.cat([t['centers'][i] for t, (_, i) in zip(targets, indices)], dim=0)
+        target_covariances = torch.cat([t['covariances'][i] for t, (_, i) in zip(targets, indices)], dim=0)
+        target_covariances = target_covariances.flatten(1)[:, [0, 1, 2, 4, 5, 8]]
+
+        loss_quads3d_center = F.l1_loss(src_centers, target_centers, reduction='none')
+        loss_quads3d_covariance = F.l1_loss(src_covariances, target_covariances, reduction='none')
+        return {'loss_quads3d_center': loss_quads3d_center.sum() / num_boxes,
+                'loss_quads3d_covariance': loss_quads3d_covariance.sum() / num_boxes}
         
 
     def _get_src_permutation_idx(self, indices):
@@ -285,6 +302,7 @@ class RTDETRCriterionv2(nn.Module):
             'quads': self.loss_quads,
             'masks': self.loss_masks,
             'depth': self.loss_depth,
+            'quads3d': self.loss_quads3d,
         }
         assert loss in loss_map, f'do you really want to compute {loss} loss?'
         return loss_map[loss](outputs, targets, indices, num_boxes, **kwargs)
@@ -324,7 +342,7 @@ class RTDETRCriterionv2(nn.Module):
                     matched = self.matcher(aux_outputs, targets)
                     indices = matched['indices']
                 for loss in self.losses:
-                    if loss in ['masks', 'depth']:
+                    if loss in ['masks', 'depth', 'quads3d']:
                         continue
                     meta = self.get_loss_meta_info(loss, aux_outputs, targets, indices)
                     l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_boxes, **meta)
@@ -339,7 +357,7 @@ class RTDETRCriterionv2(nn.Module):
             dn_num_boxes = num_boxes * outputs['dn_meta']['dn_num_group']
             for i, aux_outputs in enumerate(outputs['dn_aux_outputs']):
                 for loss in self.losses:
-                    if loss in ['quads', 'masks', 'depth']:
+                    if loss in ['quads', 'masks', 'depth', 'quads3d']:
                         continue
                     meta = self.get_loss_meta_info(loss, aux_outputs, targets, indices)
                     l_dict = self.get_loss(loss, aux_outputs, targets, indices, dn_num_boxes, **meta)
@@ -364,7 +382,7 @@ class RTDETRCriterionv2(nn.Module):
                 matched = self.matcher(aux_outputs, targets)
                 indices = matched['indices']
                 for loss in self.losses:
-                    if loss in ['quads', 'masks', 'depth']:
+                    if loss in ['quads', 'masks', 'depth', 'quads3d']:
                         continue
                     meta = self.get_loss_meta_info(loss, aux_outputs, enc_targets, indices)
                     l_dict = self.get_loss(loss, aux_outputs, enc_targets, indices, num_boxes, **meta)

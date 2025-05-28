@@ -248,6 +248,7 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
                 pred_covariances_np = pred_covariances_tensor.cpu().detach().numpy()
 
                 score_thresh = 0.6
+                img_pred_mask_vis = img_pred_vis.copy()
                 colored_mask = img_pred_vis.copy()
                 for i in range(pred_boxes_np.shape[0]):
                     if pred_scores_np[i] > score_thresh:
@@ -260,10 +261,12 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
                         # xmin, ymin, xmax, ymax = int(box[0]), int(box[1]), int(box[2]), int(box[3])
                         # cv2.rectangle(img_pred_vis, (xmin, ymin), (xmax, ymax), class_to_colors[label - 1], 1)
                         colored_mask[mask] = np.random.randint(0, 255, 3)
-                img_pred_vis = cv2.addWeighted(img_pred_vis, 0.8, colored_mask, 0.2, 0)
+                img_pred_mask_vis = cv2.addWeighted(img_pred_mask_vis, 0.8, colored_mask, 0.2, 0)
 
                 filename_pred_box = os.path.join(output_dir, f"image_{image_id_val}_pred_box_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
                 cv2.imwrite(filename_pred_box, img_pred_vis)
+                filename_pred_mask = os.path.join(output_dir, f"image_{image_id_val}_pred_mask_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
+                cv2.imwrite(filename_pred_mask, img_pred_mask_vis)
                 filename_pred_depth = os.path.join(output_dir, f"image_{image_id_val}_pred_depth_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
                 cv2.imwrite(filename_pred_depth, pred_depth_np)
                 cv2.imwrite(os.path.join(output_dir, "latest.png"), pred_depth_np)

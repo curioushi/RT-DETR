@@ -46,10 +46,9 @@ class RTDETRPostProcessor(nn.Module):
     
     # def forward(self, outputs, orig_target_sizes):
     def forward(self, outputs, orig_target_sizes: torch.Tensor):
-        logits, boxes, quads, weights, depths, masks, centers, covariances = outputs['pred_logits'], outputs['pred_boxes'], outputs['pred_quads'], outputs['pred_weights'], outputs['pred_depths'], outputs['pred_masks'], outputs['pred_points'], outputs['pred_covariance']
+        logits, boxes, quads, weights, depths, masks, centers, covariances = outputs['pred_logits'], outputs['pred_boxes'], outputs['pred_quads'], outputs['pred_weights'], outputs['pred_depths'], outputs['pred_masks'], outputs['pred_centers'], outputs['pred_covariances']
         bs, nq, h, w = masks.shape
         masks = masks.flatten(2)
-        covariances = covariances.flatten(2)
         # orig_target_sizes = torch.stack([t["orig_size"] for t in targets], dim=0)        
 
         bbox_pred = torchvision.ops.box_convert(boxes, in_fmt='cxcywh', out_fmt='xyxy')
@@ -81,7 +80,7 @@ class RTDETRPostProcessor(nn.Module):
                 centers = torch.gather(centers, dim=1, index=index.unsqueeze(-1).tile(1, 1, centers.shape[-1]))
                 covariances = torch.gather(covariances, dim=1, index=index.unsqueeze(-1).tile(1, 1, covariances.shape[-1]))
 
-        covariances = covariances.reshape(bs, nq, 3, 3)
+        covariances = covariances[:, :, [0, 1, 2, 1, 3, 4, 2, 4, 5]].reshape(bs, nq, 3, 3)
         masks = masks.reshape(bs, nq, h, w)
         # TODO for onnx export
         if self.deploy_mode:
