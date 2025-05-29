@@ -47,17 +47,20 @@ class PointNet(nn.Module):
             nn.Conv1d(hidden_dim[1], hidden_dim[2], kernel_size=1),
             nn.GELU(),
         )
-        self.center_head = nn.Linear(2 * hidden_dim[2], 3)
-        self.covariance_head = nn.Linear(2 * hidden_dim[2], 6)
+        self.center_offset_head = nn.Linear(2 * hidden_dim[2], 3)
+        self.rotation_head = nn.Linear(2 * hidden_dim[2], 6)
+        self.size_head = nn.Linear(2 * hidden_dim[2], 2)
         self.featmap_head = nn.Sequential(
             nn.Conv1d(featmap_dim, hidden_dim[2], kernel_size=1),
             nn.GELU(),
         )
 
-        nn.init.constant_(self.center_head.weight, 0)
-        nn.init.constant_(self.covariance_head.weight, 0)
-        nn.init.constant_(self.center_head.bias, 0)
-        nn.init.constant_(self.covariance_head.bias, 0)
+        nn.init.constant_(self.center_offset_head.weight, 0)
+        nn.init.constant_(self.rotation_head.weight, 0)
+        nn.init.constant_(self.size_head.weight, 0)
+        nn.init.constant_(self.center_offset_head.bias, 0)
+        nn.init.constant_(self.rotation_head.bias, 0)
+        nn.init.constant_(self.size_head.bias, 0)
 
     def forward(self, query_points, query_masks, featmap):
         """
@@ -74,11 +77,13 @@ class PointNet(nn.Module):
         x = torch.cat([x, featmap], dim=1) # B*NQ, 2*C, NP
         x = x * query_masks.unsqueeze(1)
         x = F.max_pool1d(x, int(x.size(2))).squeeze(-1) # B*NQ, 2*C
-        centers = self.center_head(x) # B*NQ, 3
-        covariances = self.covariance_head(x) # B*NQ, 6
-        centers = centers.reshape(B, NQ, 3)
-        covariances = covariances.reshape(B, NQ, 6)
-        return centers, covariances
+        center_offsets = self.center_offset_head(x) # B*NQ, 3
+        rotations = self.rotation_head(x) # B*NQ, 6
+        sizes = self.size_head(x) # B*NQ, 2
+        center_offsets = center_offsets.reshape(B, NQ, 3)
+        rotations = rotations.reshape(B, NQ, 6)
+        sizes = sizes.reshape(B, NQ, 2)
+        return center_offsets, rotations, sizes
 
 
 class MSDeformableAttention(nn.Module):
@@ -767,8 +772,10 @@ class RTDETRTransformerv2(nn.Module):
         query_weights_sum = query_weights.sum(dim=-1) # b, nq
         query_centers = (xyz_points * query_weights.unsqueeze(2)).sum(dim=-1) / query_weights_sum.unsqueeze(-1) # b, nq, 3
         query_centered_points = xyz_points - query_centers.unsqueeze(-1) # b, nq, 3, topk
-        center_offset, query_covariance = self.dec_pointnet(query_centered_points, query_weights, out_featmap)
+        center_offset, rotation, size = self.dec_pointnet(query_centered_points, query_weights, out_featmap)
         query_centers = query_centers + center_offset
+        query_rotations = rotation
+        query_sizes = size
         
         out = {'pred_logits': out_logits[-1], 
                'pred_boxes': out_bboxes[-1], 
@@ -777,7 +784,8 @@ class RTDETRTransformerv2(nn.Module):
                'pred_depths': out_depth,
                'pred_masks': out_masks,
                'pred_centers': query_centers,
-               'pred_covariances': query_covariance,
+               'pred_rotations': query_rotations,
+               'pred_sizes': query_sizes,
                }
 
         if self.training and self.aux_loss:

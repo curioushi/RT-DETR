@@ -179,19 +179,33 @@ class ConvertCocoPolysToMask(object):
         labels = torch.tensor(labels, dtype=torch.int64)
 
         # Extract quads if present
-        if anno and "coords" in anno[0]: # Check if normal data exists
-            custom_coords = [obj["coords"] for obj in anno]
-            custom_coords = torch.as_tensor(custom_coords, dtype=torch.float32).reshape(-1, 8)
+        custom_coords2d = None
+        if anno and "coords2d" in anno[0]: # Check if normal data exists
+            custom_coords2d = [obj["coords2d"] for obj in anno]
+            custom_coords2d = torch.as_tensor(custom_coords2d, dtype=torch.float32).reshape(-1, 8)
 
         # Extract normals if present
+        custom_centers = None
         custom_normals = None
-        custom_weights = None
-        if anno and "normal" in anno[0] and "pose" in anno[0]: # Check if normal data exists
-            custom_normals = [obj["normal"] for obj in anno]
-            custom_normals = torch.as_tensor(custom_normals, dtype=torch.float32).reshape(-1, 3)
-            custom_offsets = [-np.array(obj["pose"])[:3, 3].dot(normal) for obj, normal in zip(anno, custom_normals)]
-            custom_offsets = torch.as_tensor(custom_offsets, dtype=torch.float32).reshape(-1, 1)
-            custom_weights = torch.cat([custom_normals, custom_offsets], dim=1)
+        custom_x_axis = None
+        custom_y_axis = None
+        custom_offsets = None
+        custom_sizes = None
+        if anno and "pose" in anno[0] and "size" in anno[0]: # Check if normal data exists
+            poses = np.array([np.array(obj["pose"]) for obj in anno])
+            custom_centers = poses[:, :3, 3]
+            custom_x_axis = poses[:, :3, 0]
+            custom_y_axis = poses[:, :3, 1]
+            custom_normals = poses[:, :3, 2]
+            custom_offsets = -np.sum(custom_centers * custom_normals, axis=1)
+            custom_sizes = np.array([obj["size"] for obj in anno])
+            
+            custom_centers = torch.as_tensor(custom_centers, dtype=torch.float32)
+            custom_x_axis = torch.as_tensor(custom_x_axis, dtype=torch.float32)
+            custom_y_axis = torch.as_tensor(custom_y_axis, dtype=torch.float32)
+            custom_normals = torch.as_tensor(custom_normals, dtype=torch.float32)
+            custom_offsets = torch.as_tensor(custom_offsets, dtype=torch.float32)
+            custom_sizes = torch.as_tensor(custom_sizes, dtype=torch.float32)
         
         custom_camera_Ks = None
         if anno and "camera_K" in anno[0]:
@@ -200,31 +214,6 @@ class ConvertCocoPolysToMask(object):
                 camera_K = obj["camera_K"]
                 custom_camera_Ks.append([camera_K[0][0], camera_K[0][2], camera_K[1][1], camera_K[1][2]])
             custom_camera_Ks = torch.as_tensor(custom_camera_Ks, dtype=torch.float32).reshape(-1, 4)
-
-        custom_centers = None
-        custom_covariances = None
-        if anno and "pose" in anno[0] and "size" in anno[0] and "support_vector" in anno[0]:
-            custom_centers = []
-            custom_covariances = []
-            for obj in anno:
-                pose = np.array(obj["pose"])
-                size = np.array(obj["size"] + [0])
-                support_vector = np.array(obj["support_vector"])
-                shrink_ratio = 1 - support_vector
-                rotation = pose[:3, :3]
-                center = pose[:3, 3]
-                x_axis = pose[:3, 0]
-                y_axis = pose[:3, 1]
-                center = center + x_axis * size[0] * shrink_ratio[0]/2 - x_axis * size[0] * shrink_ratio[1]/2
-                center = center + y_axis * size[1] * shrink_ratio[2]/2 - y_axis * size[1] * shrink_ratio[3]/2
-                size = np.array([size[0] * (1 - shrink_ratio[0] - shrink_ratio[1]),
-                                 size[1] * (1 - shrink_ratio[2] - shrink_ratio[3]),
-                                 size[2]])
-                covariance = rotation @ np.diag((size/4) ** 2) @ rotation.T
-                custom_centers.append(center)
-                custom_covariances.append(covariance)
-            custom_centers = torch.as_tensor(custom_centers, dtype=torch.float32).reshape(-1, 3)
-            custom_covariances = torch.as_tensor(custom_covariances, dtype=torch.float32).reshape(-1, 3, 3)
 
         if self.return_masks:
             segmentations = [obj["segmentation"] for obj in anno]
@@ -245,8 +234,8 @@ class ConvertCocoPolysToMask(object):
             masks = masks[keep]
         if keypoints is not None:
             keypoints = keypoints[keep]
-        if custom_coords is not None:
-            custom_coords = custom_coords[keep]
+        if custom_coords2d is not None:
+            custom_coords2d = custom_coords2d[keep]
         if custom_normals is not None:
             custom_normals = custom_normals[keep]
 
@@ -258,18 +247,22 @@ class ConvertCocoPolysToMask(object):
         target["image_id"] = image_id
         if keypoints is not None:
             target["keypoints"] = keypoints
-        if custom_coords is not None:
-            target["coords"] = custom_coords
-        if custom_normals is not None:
-            target["normals"] = custom_normals
-        if custom_weights is not None:
-            target["weights"] = custom_weights
-        if custom_camera_Ks is not None:
-            target["camera_Ks"] = custom_camera_Ks
+        if custom_coords2d is not None:
+            target["coords2d"] = custom_coords2d
         if custom_centers is not None:
             target["centers"] = custom_centers
-        if custom_covariances is not None:
-            target["covariances"] = custom_covariances
+        if custom_normals is not None:
+            target["normals"] = custom_normals
+        if custom_x_axis is not None:
+            target["x_axis"] = custom_x_axis
+        if custom_y_axis is not None:
+            target["y_axis"] = custom_y_axis
+        if custom_offsets is not None:
+            target["offsets"] = custom_offsets
+        if custom_sizes is not None:
+            target["sizes"] = custom_sizes
+        if custom_camera_Ks is not None:
+            target["camera_Ks"] = custom_camera_Ks
 
         # for conversion to coco api
         area = torch.tensor([obj["area"] for obj in anno])

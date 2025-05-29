@@ -109,20 +109,19 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     print("Averaged stats:", metric_logger)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
-def center_covariance_to_2d_quads(center, covariance, camera_K):
-    eigenvalues, eigenvectors = np.linalg.eig(covariance)
-    sort_indices = np.argsort(eigenvalues)[::-1]
-    eigenvalues = eigenvalues[sort_indices]
-    eigenvectors = eigenvectors[:, sort_indices]
-    major_axis = eigenvectors[:, 0]
-    minor_axis = eigenvectors[:, 1]
-    major_scale = 2 * np.sqrt(eigenvalues[0])
-    minor_scale = 2 * np.sqrt(eigenvalues[1])
+def project_3d_to_2d(center, rotation, size, camera_K):
+    normal = rotation[:3]
+    x_axis = rotation[3:]
+    y_axis = np.cross(normal, x_axis)
+    x_axis /= np.linalg.norm(x_axis)
+    y_axis /= np.linalg.norm(y_axis)
+    half_x_axis = x_axis * size[0] * 0.5
+    half_y_axis = y_axis * size[1] * 0.5
     quads = np.array([
-        center + major_scale * major_axis + minor_scale * minor_axis,
-        center - major_scale * major_axis + minor_scale * minor_axis,
-        center - major_scale * major_axis - minor_scale * minor_axis,
-        center + major_scale * major_axis - minor_scale * minor_axis,
+        center + half_x_axis + half_y_axis,
+        center + half_x_axis - half_y_axis,
+        center - half_x_axis - half_y_axis,
+        center - half_x_axis + half_y_axis,
     ])
     quads = quads @ camera_K.T
     quads = quads[:, :2] / quads[:, 2:3]
@@ -182,7 +181,9 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
                 gt_masks_tensor = target['masks']
                 gt_depth_tensor = (torch.exp(target['depth']) - 1).squeeze(0)
                 gt_centers_tensor = target['centers']
-                gt_covariances_tensor = target['covariances']
+                gt_normals_tensor = target['normals']
+                gt_x_axis_tensor = target['x_axis']
+                gt_sizes_tensor = target['sizes']
                 fx, cx, fy, cy = target['camera_Ks'][0].cpu().detach().numpy()
                 w, h = target['orig_size'].cpu().detach().numpy()
                 fx = fx / w * 640
@@ -197,9 +198,19 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
                 gt_masks_np = gt_masks_tensor.cpu().detach().numpy()
                 gt_depth_np = gt_depth_tensor.cpu().detach().numpy()
                 gt_centers_np = gt_centers_tensor.cpu().detach().numpy()
-                gt_covariances_np = gt_covariances_tensor.cpu().detach().numpy()
+                gt_normals_np = gt_normals_tensor.cpu().detach().numpy()
+                gt_x_axis_np = gt_x_axis_tensor.cpu().detach().numpy()
+                gt_rotations_np = np.concatenate([gt_normals_np, gt_x_axis_np], axis=-1)
+                gt_sizes_np = gt_sizes_tensor.cpu().detach().numpy()
                 min_depth, max_depth = gt_depth_np.min(), gt_depth_np.max()
                 gt_depth_np = ((gt_depth_np - min_depth) / (max_depth - min_depth) * 255).astype(np.uint8)
+
+                json_data = {}
+                json_data["ground_truth"] = {
+                    "centers": gt_centers_np.tolist(),
+                    "rotations": gt_rotations_np.tolist(),
+                    "sizes": gt_sizes_np.tolist(),
+                }
 
                 class_to_colors = {
                     0: (0, 255, 0),
@@ -211,7 +222,7 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
                 for i in range(gt_boxes_np.shape[0]):
                     label = gt_labels_np[i]
                     mask = gt_masks_np[i] > 0.5
-                    quads = center_covariance_to_2d_quads(gt_centers_np[i], gt_covariances_np[i], camera_K_np)
+                    quads = project_3d_to_2d(gt_centers_np[i], gt_rotations_np[i], gt_sizes_np[i], camera_K_np)
                     cv2.polylines(img_gt_vis, [quads.astype(np.int32)], True, class_to_colors[label], 1)
 
                     # x1, y1, x2, y2 = gt_boxes_np[i].astype(np.int32)
@@ -235,7 +246,8 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
                 pred_depth_tensor = torch.exp(pred_depth_tensor) - 1
                 pred_depth_tensor = F.interpolate(pred_depth_tensor.unsqueeze(0).unsqueeze(0), size=(640, 640), mode='nearest').squeeze(0).squeeze(0)
                 pred_centers_tensor = output['centers']
-                pred_covariances_tensor = output['covariances']
+                pred_rotations_tensor = output['rotations']
+                pred_sizes_tensor = output['sizes']
 
                 pred_boxes_np = pred_boxes_tensor.cpu().detach().numpy() / 1024 * 640
                 pred_scores_np = pred_scores_tensor.cpu().detach().numpy()
@@ -245,7 +257,15 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
                 min_depth, max_depth = pred_depth_np.min(), pred_depth_np.max()
                 pred_depth_np = ((pred_depth_np - min_depth) / (max_depth - min_depth) * 255).astype(np.uint8)
                 pred_centers_np = pred_centers_tensor.cpu().detach().numpy()
-                pred_covariances_np = pred_covariances_tensor.cpu().detach().numpy()
+                pred_rotations_np = pred_rotations_tensor.cpu().detach().numpy()
+                pred_sizes_np = pred_sizes_tensor.cpu().detach().numpy()
+
+                json_data["predictions"] = {
+                    "scores": pred_scores_np.tolist(),
+                    "centers": pred_centers_np.tolist(),
+                    "rotations": pred_rotations_np.tolist(),
+                    "sizes": pred_sizes_np.tolist(),
+                }
 
                 score_thresh = 0.6
                 img_pred_mask_vis = img_pred_vis.copy()
@@ -255,7 +275,7 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
                         box = pred_boxes_np[i]
                         label = pred_labels_np[i]
                         mask = pred_masks_np[i] > 0.5
-                        quads = center_covariance_to_2d_quads(pred_centers_np[i], pred_covariances_np[i], camera_K_np)
+                        quads = project_3d_to_2d(pred_centers_np[i], pred_rotations_np[i], pred_sizes_np[i], camera_K_np)
                         cv2.polylines(img_pred_vis, [quads.astype(np.int32)], True, class_to_colors[label - 1], 1)
 
                         # xmin, ymin, xmax, ymax = int(box[0]), int(box[1]), int(box[2]), int(box[3])
@@ -263,11 +283,15 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
                         colored_mask[mask] = np.random.randint(0, 255, 3)
                 img_pred_mask_vis = cv2.addWeighted(img_pred_mask_vis, 0.8, colored_mask, 0.2, 0)
 
-                filename_pred_box = os.path.join(output_dir, f"image_{image_id_val}_pred_box_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
+                datetime_str = datetime.now().strftime('%Y%m%d_%H%M%S')
+                with open(os.path.join(output_dir, f"predictions_{image_id_val}_{datetime_str}.json"), "w") as f:
+                    json.dump(json_data, f)
+
+                filename_pred_box = os.path.join(output_dir, f"image_{image_id_val}_pred_box_{datetime_str}.png")
                 cv2.imwrite(filename_pred_box, img_pred_vis)
-                filename_pred_mask = os.path.join(output_dir, f"image_{image_id_val}_pred_mask_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
+                filename_pred_mask = os.path.join(output_dir, f"image_{image_id_val}_pred_mask_{datetime_str}.png")
                 cv2.imwrite(filename_pred_mask, img_pred_mask_vis)
-                filename_pred_depth = os.path.join(output_dir, f"image_{image_id_val}_pred_depth_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
+                filename_pred_depth = os.path.join(output_dir, f"image_{image_id_val}_pred_depth_{datetime_str}.png")
                 cv2.imwrite(filename_pred_depth, pred_depth_np)
                 cv2.imwrite(os.path.join(output_dir, "latest.png"), pred_depth_np)
         if coco_evaluator is not None:

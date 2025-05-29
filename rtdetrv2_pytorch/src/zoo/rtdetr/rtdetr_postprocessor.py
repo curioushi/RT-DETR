@@ -46,7 +46,7 @@ class RTDETRPostProcessor(nn.Module):
     
     # def forward(self, outputs, orig_target_sizes):
     def forward(self, outputs, orig_target_sizes: torch.Tensor):
-        logits, boxes, quads, weights, depths, masks, centers, covariances = outputs['pred_logits'], outputs['pred_boxes'], outputs['pred_quads'], outputs['pred_weights'], outputs['pred_depths'], outputs['pred_masks'], outputs['pred_centers'], outputs['pred_covariances']
+        logits, boxes, quads, weights, depths, masks, centers, rotations, sizes = outputs['pred_logits'], outputs['pred_boxes'], outputs['pred_quads'], outputs['pred_weights'], outputs['pred_depths'], outputs['pred_masks'], outputs['pred_centers'], outputs['pred_rotations'], outputs['pred_sizes']
         bs, nq, h, w = masks.shape
         masks = masks.flatten(2)
         # orig_target_sizes = torch.stack([t["orig_size"] for t in targets], dim=0)        
@@ -66,7 +66,8 @@ class RTDETRPostProcessor(nn.Module):
             weights = weights.gather(dim=1, index=index.unsqueeze(-1).repeat(1, 1, weights.shape[-1]))
             masks = masks.gather(dim=1, index=index.unsqueeze(-1).repeat(1, 1, masks.shape[-1]))
             centers = centers.gather(dim=1, index=index.unsqueeze(-1).repeat(1, 1, centers.shape[-1]))
-            covariances = covariances.gather(dim=1, index=index.unsqueeze(-1).repeat(1, 1, covariances.shape[-1]))
+            rotations = rotations.gather(dim=1, index=index.unsqueeze(-1).repeat(1, 1, rotations.shape[-1]))
+            sizes = sizes.gather(dim=1, index=index.unsqueeze(-1).repeat(1, 1, sizes.shape[-1]))
         else:
             scores = F.softmax(logits)[:, :, :-1]
             scores, labels = scores.max(dim=-1)
@@ -78,13 +79,13 @@ class RTDETRPostProcessor(nn.Module):
                 weights = torch.gather(weights, dim=1, index=index.unsqueeze(-1).tile(1, 1, weights.shape[-1]))
                 masks = torch.gather(masks, dim=1, index=index.unsqueeze(-1).tile(1, 1, masks.shape[-1]))
                 centers = torch.gather(centers, dim=1, index=index.unsqueeze(-1).tile(1, 1, centers.shape[-1]))
-                covariances = torch.gather(covariances, dim=1, index=index.unsqueeze(-1).tile(1, 1, covariances.shape[-1]))
+                rotations = torch.gather(rotations, dim=1, index=index.unsqueeze(-1).tile(1, 1, rotations.shape[-1]))
+                sizes = torch.gather(sizes, dim=1, index=index.unsqueeze(-1).tile(1, 1, sizes.shape[-1]))
 
-        covariances = covariances[:, :, [0, 1, 2, 1, 3, 4, 2, 4, 5]].reshape(bs, nq, 3, 3)
         masks = masks.reshape(bs, nq, h, w)
         # TODO for onnx export
         if self.deploy_mode:
-            return labels, boxes, scores, quads, weights, depths, masks, centers, covariances
+            return labels, boxes, scores, quads, weights, depths, masks, centers, rotations, sizes
 
         # TODO
         if self.remap_mscoco_category:
@@ -93,8 +94,8 @@ class RTDETRPostProcessor(nn.Module):
                 .to(boxes.device).reshape(labels.shape)
 
         results = []
-        for lab, box, sco, quad, weight, depth, mask, center, covariance in zip(labels, boxes, scores, quads, weights, depths, masks, centers, covariances):
-            result = dict(labels=lab, boxes=box, scores=sco, quads=quad, weights=weight, depth=depth, masks=mask, centers=center, covariances=covariance)
+        for lab, box, sco, quad, weight, depth, mask, center, rotation, size in zip(labels, boxes, scores, quads, weights, depths, masks, centers, rotations, sizes):
+            result = dict(labels=lab, boxes=box, scores=sco, quads=quad, weights=weight, depth=depth, masks=mask, centers=center, rotations=rotation, sizes=size)
             results.append(result)
         
         return results
