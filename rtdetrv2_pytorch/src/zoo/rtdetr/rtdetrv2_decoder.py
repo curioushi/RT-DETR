@@ -758,7 +758,8 @@ class RTDETRTransformerv2(nn.Module):
         nc = out_featmap.shape[1]
         xyz_points = self._depth_to_xyz(out_depth.detach(), targets).flatten(2) # b, 3, h*w
         query_weights = F.sigmoid(out_masks.detach()).flatten(2)  # b, nq, h*w
-        query_weights, top_k_indices = torch.topk(query_weights, k=topk, dim=-1) # b, nq, topk
+        _, top_k_indices = torch.topk(query_weights + torch.rand_like(query_weights) * 0.2, k=topk, dim=-1) # b, nq, topk
+        query_weights = torch.gather(query_weights, dim=-1, index=top_k_indices) # b, nq, topk
         xyz_points = torch.gather(xyz_points.unsqueeze(1).expand(-1, nq, -1, -1), dim=-1, 
                                   index=top_k_indices.unsqueeze(2).expand(-1, -1, 3, -1)) # b, nq, 3, topk
         out_featmap = torch.gather(out_featmap.flatten(2).unsqueeze(1).expand(-1, nq, -1, -1), dim=-1,
