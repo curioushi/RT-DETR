@@ -40,10 +40,10 @@ class RTDETR(nn.Module):
         self.encoder = encoder
         
     def forward(self, x, targets=None):
-        # rgb, depth = torch.split(x, [3, 1], dim=1)
         x = self.backbone(x)
-        x = self.encoder(x)        
-        x = self.decoder(x, targets)
+        x_high_res, x = x[0], x[1:]
+        x = self.encoder(x)
+        x = self.decoder(x, x_high_res, targets)
 
         return x
     

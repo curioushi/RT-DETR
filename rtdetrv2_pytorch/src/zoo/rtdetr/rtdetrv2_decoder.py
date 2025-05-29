@@ -36,7 +36,7 @@ class MLP(nn.Module):
         return x
 
 class PointNet(nn.Module):
-    def __init__(self, input_dim=3, hidden_dim=(32, 64, 128), featmap_dim=256):
+    def __init__(self, input_dim=3, hidden_dim=(32, 64, 128), featmap_dim=64):
         super(PointNet, self).__init__()
         assert len(hidden_dim) == 3, "hidden_dim must be a tuple of length 3"
         self.mlp = nn.Sequential(
@@ -426,6 +426,8 @@ class RTDETRTransformerv2(nn.Module):
             self.fpn_blocks.append(
                 CSPRepLayer(hidden_dim * 2, hidden_dim, round(3 * depth_mult), act=act_fn, expansion=expansion)
             )
+        self.high_res_lateral_conv1 = ConvNormLayer(64, 64, 1, 1, act=act_fn)
+        self.high_res_lateral_conv2 = ConvNormLayer(hidden_dim, 64, 1, 1, act=act_fn)
 
         # Transformer module
         decoder_layer = TransformerDecoderLayer(hidden_dim, nhead, dim_feedforward, dropout, \
@@ -475,10 +477,10 @@ class RTDETRTransformerv2(nn.Module):
         self.dec_weights_head = nn.ModuleList([
             MLP(hidden_dim, hidden_dim, 4, 3) for _ in range(num_layers)
         ])
-        self.dec_mask_head = MLP(hidden_dim, hidden_dim, hidden_dim, 3)
-        self.dec_mask_embed = MLP(hidden_dim, hidden_dim, hidden_dim, 3)
-        self.dec_depth_head = MLP(hidden_dim, hidden_dim, 1, 3)
-        self.dec_pointnet = PointNet(input_dim=3, hidden_dim=(16, 32, 64))
+        self.dec_mask_head = MLP(hidden_dim, 64, 64, 3)
+        self.dec_mask_embed = MLP(64, 64, 64, 3)
+        self.dec_depth_head = MLP(64, 64, 1, 3)
+        self.dec_pointnet = PointNet(input_dim=3, hidden_dim=(16, 32, 64), featmap_dim=64)
 
         # init encoder output anchors and valid_mask
         if self.eval_spatial_size:
@@ -701,22 +703,26 @@ class RTDETRTransformerv2(nn.Module):
         
         return xyz_mapping
 
-    def forward(self, feats, targets=None):
+    def forward(self, feats, feat_high_res, targets=None):
         # input projection and embedding
         proj_feats, memory, spatial_shapes = self._get_encoder_input(feats)
         
         # FPN operation on proj_feats
         fpn_inner_outs = [proj_feats[-1]]
         for idx in range(self.num_levels - 1, 0, -1):
-            feat_heigh = fpn_inner_outs[0]
+            feat_high = fpn_inner_outs[0]
             feat_low = proj_feats[idx - 1]
             conv_idx = (self.num_levels - 1) - idx
-            feat_heigh = self.lateral_convs[conv_idx](feat_heigh)
-            fpn_inner_outs[0] = feat_heigh
-            upsample_feat = F.interpolate(feat_heigh, scale_factor=2., mode='nearest')
+            feat_high = self.lateral_convs[conv_idx](feat_high)
+            fpn_inner_outs[0] = feat_high
+            upsample_feat = F.interpolate(feat_high, scale_factor=2., mode='nearest')
             inner_out = self.fpn_blocks[conv_idx](torch.concat([upsample_feat, feat_low], dim=1))
             fpn_inner_outs.insert(0, inner_out)
         out_featmap = fpn_inner_outs[0]
+        feat_high_res1 = self.high_res_lateral_conv1(feat_high_res)
+        feat_high_res2 = F.interpolate(self.high_res_lateral_conv2(out_featmap), scale_factor=2., mode='nearest')
+        out_featmap = feat_high_res1 + feat_high_res2
+
         mask_embedding = self.dec_mask_embed(out_featmap.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
         out_depth = self.dec_depth_head(out_featmap.permute(0, 2, 3, 1)).squeeze(-1)
 
