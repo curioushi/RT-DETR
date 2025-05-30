@@ -51,6 +51,10 @@ class PointNet(nn.Module):
             nn.Conv1d(featmap_dim, hidden_dim[2], kernel_size=1),
             nn.GELU(),
         )
+        self.fuse_head = nn.Sequential(
+            nn.Conv1d(2 * hidden_dim[2], 2 * hidden_dim[2], kernel_size=1),
+            nn.GELU(),
+        )
         self.center_offset_head = nn.Linear(2 * hidden_dim[2], 3)
         self.rotation_head = nn.Linear(2 * hidden_dim[2], 6)
         self.size_head = nn.Linear(2 * hidden_dim[2], 2)
@@ -66,15 +70,16 @@ class PointNet(nn.Module):
         """
         query_points: B x NQ x 3 x NP
         query_masks: B x NQ x NP
-        featmap: B x NQ x featmap_dim x NP
+        featmap: B x NQ x featmap_dim
         """
         B, NQ, _, NP = query_points.shape
         featmap_dim = featmap.shape[2]
         query_points = query_points.reshape(-1, 3, NP)
         query_masks = query_masks.reshape(-1, NP)
-        featmap = self.featmap_head(featmap.reshape(-1, featmap_dim, NP)) # B*NQ, C, NP
+        featmap = self.featmap_head(featmap.reshape(-1, featmap_dim, 1)).expand(-1, -1, NP) # B*NQ, C, NP
         x = self.mlp(query_points) # B*NQ, C, NP
         x = torch.cat([x, featmap], dim=1) # B*NQ, 2*C, NP
+        x = self.fuse_head(x)
         x = x * query_masks.unsqueeze(1)
         x = F.max_pool1d(x, int(x.size(2))).squeeze(-1) # B*NQ, 2*C
         center_offsets = self.center_offset_head(x) # B*NQ, 3
@@ -766,22 +771,20 @@ class RTDETRTransformerv2(nn.Module):
         
         topk = 1000
         nq = out_masks.shape[1]
-        nc = out_featmap.shape[1]
+        h, w = out_featmap.shape[2:]
         out_depth_detach = out_depth.detach()
         out_masks_detach = out_masks.detach()
-        out_featmap_detach = out_featmap.detach()
         xyz_points = self._depth_to_xyz(out_depth_detach, targets).flatten(2) # b, 3, h*w
         query_weights = F.sigmoid(out_masks_detach).flatten(2)  # b, nq, h*w
+        rgb_embeddings = torch.einsum('bqn,bcn->bqc', query_weights, out_featmap.flatten(2)) / (query_weights.sum(dim=-1, keepdim=True) + 1e-1)
         _, top_k_indices = torch.topk(query_weights + torch.rand_like(query_weights) * 0.2, k=topk, dim=-1) # b, nq, topk
         query_weights = torch.gather(query_weights, dim=-1, index=top_k_indices) # b, nq, topk
         xyz_points = torch.gather(xyz_points.unsqueeze(1).expand(-1, nq, -1, -1), dim=-1, 
                                   index=top_k_indices.unsqueeze(2).expand(-1, -1, 3, -1)) # b, nq, 3, topk
-        out_featmap_detach = torch.gather(out_featmap_detach.flatten(2).unsqueeze(1).expand(-1, nq, -1, -1), dim=-1,
-                                   index=top_k_indices.unsqueeze(2).expand(-1, -1, nc, -1)) # b, nq, c, topk
         query_weights_sum = query_weights.sum(dim=-1) # b, nq
         query_centers = (xyz_points * query_weights.unsqueeze(2)).sum(dim=-1) / query_weights_sum.unsqueeze(-1) # b, nq, 3
         query_centered_points = xyz_points - query_centers.unsqueeze(-1) # b, nq, 3, topk
-        center_offset, rotation, size = self.dec_pointnet(query_centered_points, query_weights, out_featmap_detach)
+        center_offset, rotation, size = self.dec_pointnet(query_centered_points, query_weights, rgb_embeddings)
         query_centers = query_centers + center_offset
         query_rotations = rotation
         query_sizes = size
