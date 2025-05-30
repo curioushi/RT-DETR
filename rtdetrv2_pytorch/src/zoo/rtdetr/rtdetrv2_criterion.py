@@ -248,7 +248,15 @@ class RTDETRCriterionv2(nn.Module):
         target_masks = torch.cat([t['masks'][i] for t, (_, i) in zip(targets, indices)], dim=0)
         target_masks = F.interpolate(target_masks.unsqueeze(1), size=(h, w), mode='bilinear', align_corners=False).squeeze(1)
         loss_mask_bce = F.binary_cross_entropy_with_logits(src_masks, target_masks, reduction='none').flatten(1)
-        return {'loss_mask_bce': loss_mask_bce.mean(axis=1).sum() / num_boxes}
+
+        src_masks_sigmoid = F.sigmoid(src_masks).flatten(1)
+        target_masks = target_masks.flatten(1)
+        numerator = 2 * (src_masks_sigmoid * target_masks).sum(dim=-1)
+        denominator = src_masks_sigmoid.sum(dim=-1) + target_masks.sum(dim=-1)
+        loss_mask_dice = 1 - (numerator + 1) / (denominator + 1)
+
+        return {'loss_mask_bce': loss_mask_bce.mean(axis=1).sum() / num_boxes,
+                'loss_mask_dice': loss_mask_dice.sum() / num_boxes}
     
     def loss_depth(self, outputs, targets, indices, num_boxes, **kwargs):
         assert 'pred_depths' in outputs

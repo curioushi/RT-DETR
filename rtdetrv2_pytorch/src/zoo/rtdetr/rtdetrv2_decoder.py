@@ -36,7 +36,7 @@ class MLP(nn.Module):
         return x
 
 class PointNet(nn.Module):
-    def __init__(self, input_dim=3, hidden_dim=(32, 64, 128), featmap_dim=64):
+    def __init__(self, input_dim=3, hidden_dim=(32, 64, 128), featmap_dim=256):
         super(PointNet, self).__init__()
         assert len(hidden_dim) == 3, "hidden_dim must be a tuple of length 3"
         self.mlp = nn.Sequential(
@@ -47,13 +47,13 @@ class PointNet(nn.Module):
             nn.Conv1d(hidden_dim[1], hidden_dim[2], kernel_size=1),
             nn.GELU(),
         )
-        self.center_offset_head = nn.Linear(2 * hidden_dim[2], 3)
-        self.rotation_head = nn.Linear(2 * hidden_dim[2], 6)
-        self.size_head = nn.Linear(2 * hidden_dim[2], 2)
         self.featmap_head = nn.Sequential(
             nn.Conv1d(featmap_dim, hidden_dim[2], kernel_size=1),
             nn.GELU(),
         )
+        self.center_offset_head = nn.Linear(2 * hidden_dim[2], 3)
+        self.rotation_head = nn.Linear(2 * hidden_dim[2], 6)
+        self.size_head = nn.Linear(2 * hidden_dim[2], 2)
 
         nn.init.constant_(self.center_offset_head.weight, 0)
         nn.init.constant_(self.rotation_head.weight, 0)
@@ -426,8 +426,8 @@ class RTDETRTransformerv2(nn.Module):
             self.fpn_blocks.append(
                 CSPRepLayer(hidden_dim * 2, hidden_dim, round(3 * depth_mult), act=act_fn, expansion=expansion)
             )
-        self.high_res_lateral_conv1 = ConvNormLayer(64, 64, 1, 1, act=act_fn)
-        self.high_res_lateral_conv2 = ConvNormLayer(hidden_dim, 64, 1, 1, act=act_fn)
+        self.high_res_lateral_conv1 = ConvNormLayer(64, hidden_dim, 1, 1, act=act_fn)
+        self.high_res_lateral_conv2 = ConvNormLayer(hidden_dim, hidden_dim, 1, 1, act=act_fn)
 
         # Transformer module
         decoder_layer = TransformerDecoderLayer(hidden_dim, nhead, dim_feedforward, dropout, \
@@ -477,10 +477,10 @@ class RTDETRTransformerv2(nn.Module):
         self.dec_weights_head = nn.ModuleList([
             MLP(hidden_dim, hidden_dim, 4, 3) for _ in range(num_layers)
         ])
-        self.dec_mask_head = MLP(hidden_dim, 64, 64, 3)
-        self.dec_mask_embed = MLP(64, 64, 64, 3)
-        self.dec_depth_head = MLP(64, 64, 1, 3)
-        self.dec_pointnet = PointNet(input_dim=3, hidden_dim=(16, 32, 64), featmap_dim=64)
+        self.dec_mask_head = MLP(hidden_dim, hidden_dim, hidden_dim, 3)
+        self.dec_mask_embed = MLP(hidden_dim, hidden_dim, hidden_dim, 3)
+        self.dec_depth_head = MLP(hidden_dim, hidden_dim, 1, 3)
+        self.dec_pointnet = PointNet(input_dim=3, hidden_dim=(32, 64, 128), featmap_dim=hidden_dim)
 
         # init encoder output anchors and valid_mask
         if self.eval_spatial_size:
@@ -767,18 +767,21 @@ class RTDETRTransformerv2(nn.Module):
         topk = 1000
         nq = out_masks.shape[1]
         nc = out_featmap.shape[1]
-        xyz_points = self._depth_to_xyz(out_depth.detach(), targets).flatten(2) # b, 3, h*w
-        query_weights = F.sigmoid(out_masks.detach()).flatten(2)  # b, nq, h*w
+        out_depth_detach = out_depth.detach()
+        out_masks_detach = out_masks.detach()
+        out_featmap_detach = out_featmap.detach()
+        xyz_points = self._depth_to_xyz(out_depth_detach, targets).flatten(2) # b, 3, h*w
+        query_weights = F.sigmoid(out_masks_detach).flatten(2)  # b, nq, h*w
         _, top_k_indices = torch.topk(query_weights + torch.rand_like(query_weights) * 0.2, k=topk, dim=-1) # b, nq, topk
         query_weights = torch.gather(query_weights, dim=-1, index=top_k_indices) # b, nq, topk
         xyz_points = torch.gather(xyz_points.unsqueeze(1).expand(-1, nq, -1, -1), dim=-1, 
                                   index=top_k_indices.unsqueeze(2).expand(-1, -1, 3, -1)) # b, nq, 3, topk
-        out_featmap = torch.gather(out_featmap.flatten(2).unsqueeze(1).expand(-1, nq, -1, -1), dim=-1,
+        out_featmap_detach = torch.gather(out_featmap_detach.flatten(2).unsqueeze(1).expand(-1, nq, -1, -1), dim=-1,
                                    index=top_k_indices.unsqueeze(2).expand(-1, -1, nc, -1)) # b, nq, c, topk
         query_weights_sum = query_weights.sum(dim=-1) # b, nq
         query_centers = (xyz_points * query_weights.unsqueeze(2)).sum(dim=-1) / query_weights_sum.unsqueeze(-1) # b, nq, 3
         query_centered_points = xyz_points - query_centers.unsqueeze(-1) # b, nq, 3, topk
-        center_offset, rotation, size = self.dec_pointnet(query_centered_points, query_weights, out_featmap)
+        center_offset, rotation, size = self.dec_pointnet(query_centered_points, query_weights, out_featmap_detach)
         query_centers = query_centers + center_offset
         query_rotations = rotation
         query_sizes = size
