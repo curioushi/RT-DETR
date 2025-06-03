@@ -89,7 +89,8 @@ class BatchImageCollateFuncion(BaseCollateFunction):
 
     def __call__(self, items):
         images = torch.cat([x[0][None] for x in items], dim=0)
-        targets = [x[1] for x in items]
+        sparse_xyzs = torch.cat([x[1][None] for x in items], dim=0)
+        targets = [x[2] for x in items]
 
         if self.scales is not None and self.epoch < self.stop_epoch:
             # sz = random.choice(self.scales)
@@ -103,5 +104,5 @@ class BatchImageCollateFuncion(BaseCollateFunction):
                     tg['masks'] = F.interpolate(tg['masks'], size=sz, mode='nearest')
                 raise NotImplementedError('')
 
-        return images, targets
+        return images, sparse_xyzs, targets
 

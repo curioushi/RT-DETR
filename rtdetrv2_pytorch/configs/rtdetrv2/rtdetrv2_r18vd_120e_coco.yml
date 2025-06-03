@@ -7,7 +7,7 @@ __include__: [
 ]
 
 
-output_dir: ./output/rtdetrv2_r18vd_120e_coco
+output_dir: ./output/rtdetrv2_0603_quad2d_plane_sp10_gt_depth_fix_topk
 
 
 PResNet:
@@ -27,7 +27,7 @@ RTDETRTransformerv2:
   num_layers: 3
 
 
-epoches: 300
+epoches: 1000
 
 optimizer:
   type: AdamW
@@ -41,6 +41,6 @@ train_dataloader:
   dataset: 
     transforms:
       policy:
-        epoch: 297
+        epoch: 997
   collate_fn:
     scales: ~

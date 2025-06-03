@@ -42,39 +42,28 @@ class CocoDetection(torchvision.datasets.CocoDetection, DetDataset):
         self.remap_mscoco_category = remap_mscoco_category
 
     def __getitem__(self, idx):
-        img, target, depth = self.load_item(idx)
+        img, target, xyz_mapping = self.load_item(idx)
         if self._transforms is not None:
             img, target, _ = self._transforms(img, target, self)
 
-        depth = torch.from_numpy(depth).float().unsqueeze(0) # (1, 1024, 1024)
-        depth = F.interpolate(
-            depth.unsqueeze(0),
-            size=(640, 640),
-            mode='nearest'
-        ).squeeze(0)
-        valid_depth_mask = depth < 100
-        depth = torch.log(torch.clamp(depth, 0.0, 100.0) + 1)
-        target['depth'] = depth
-        target['valid_depth_mask'] = valid_depth_mask
-
-        # sample 2% of the depth points
-        sparse_depth = torch.zeros_like(depth)
-        num_points = depth.numel()
-        num_samples = int(num_points * 0.02)
+        xyz_mapping = torch.from_numpy(xyz_mapping).float().permute(2, 0, 1) # (3, 1024, 1024)
+        valid_depth_mask = xyz_mapping[2] < 100
+        xyz_mapping[:, ~valid_depth_mask] = 0
+        sparse_xyz_mapping = torch.zeros_like(xyz_mapping)
+        num_samples = 40960
         if num_samples > 0:
-            row_indices = torch.randint(0, depth.shape[1], (num_samples,))
-            col_indices = torch.randint(0, depth.shape[2], (num_samples,))
-            sparse_depth[:, row_indices, col_indices] = depth[:, row_indices, col_indices]
+            row_indices = torch.randint(0, xyz_mapping.shape[1], (num_samples,))
+            col_indices = torch.randint(0, xyz_mapping.shape[2], (num_samples,))
+            sparse_xyz_mapping[:, row_indices, col_indices] = xyz_mapping[:, row_indices, col_indices]
             
-        sample = torch.cat([img, sparse_depth], dim=0)
-        return sample, target
+        return img, sparse_xyz_mapping, target
 
     def load_item(self, idx):
         image, target = super(CocoDetection, self).__getitem__(idx)
         image_id = self.ids[idx]
         file_name = self.coco.dataset['images'][idx]['file_name']
         xyz_path = osp.join(self.xyz_folder, file_name.replace('.png', '.npz'))
-        depth = np.load(xyz_path)['xyz_mapping'][:, :, 2]
+        xyz_mapping = np.load(xyz_path)['xyz_mapping']
 
         target = {'image_id': image_id, 'annotations': target}
 
@@ -92,7 +81,7 @@ class CocoDetection(torchvision.datasets.CocoDetection, DetDataset):
         if 'masks' in target:
             target['masks'] = convert_to_tv_tensor(target['masks'], key='masks')
         
-        return image, target, depth
+        return image, target, xyz_mapping
 
     def extra_repr(self) -> str:
         s = f' img_folder: {self.img_folder}\n ann_file: {self.ann_file}\n'
@@ -182,7 +171,10 @@ class ConvertCocoPolysToMask(object):
         custom_coords2d = None
         if anno and "coords2d" in anno[0]: # Check if normal data exists
             custom_coords2d = [obj["coords2d"] for obj in anno]
-            custom_coords2d = torch.as_tensor(custom_coords2d, dtype=torch.float32).reshape(-1, 8)
+            custom_coords2d = torch.as_tensor(custom_coords2d, dtype=torch.float32).reshape(-1, 4, 2)
+            custom_coords2d[:, :, 0] /= w
+            custom_coords2d[:, :, 1] /= h
+            custom_coords2d = custom_coords2d.reshape(-1, 8)
 
         # Extract normals if present
         custom_centers = None

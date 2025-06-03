@@ -55,16 +55,13 @@ class PointNet(nn.Module):
             nn.Conv1d(2 * hidden_dim[2], 2 * hidden_dim[2], kernel_size=1),
             nn.GELU(),
         )
-        self.center_offset_head = nn.Linear(2 * hidden_dim[2], 3)
-        self.rotation_head = nn.Linear(2 * hidden_dim[2], 6)
-        self.size_head = nn.Linear(2 * hidden_dim[2], 2)
+        self.normal_head = nn.Linear(2 * hidden_dim[2], 3, bias=False)
+        self.offset_head = nn.Linear(2 * hidden_dim[2], 1, bias=False)
 
-        nn.init.constant_(self.center_offset_head.weight, 0)
-        nn.init.constant_(self.rotation_head.weight, 0)
-        nn.init.constant_(self.size_head.weight, 0)
-        nn.init.constant_(self.center_offset_head.bias, 0)
-        nn.init.constant_(self.rotation_head.bias, 0)
-        nn.init.constant_(self.size_head.bias, 0)
+        nn.init.constant_(self.normal_head.weight, 0)
+        nn.init.constant_(self.offset_head.weight, 0)
+        # nn.init.constant_(self.normal_head.bias, 0)
+        # nn.init.constant_(self.center_offset_head.bias, 0)
 
     def forward(self, query_points, query_masks, featmap):
         """
@@ -82,13 +79,11 @@ class PointNet(nn.Module):
         x = self.fuse_head(x)
         x = x * query_masks.unsqueeze(1)
         x = F.max_pool1d(x, int(x.size(2))).squeeze(-1) # B*NQ, 2*C
-        center_offsets = self.center_offset_head(x) # B*NQ, 3
-        rotations = self.rotation_head(x) # B*NQ, 6
-        sizes = self.size_head(x) # B*NQ, 2
-        center_offsets = center_offsets.reshape(B, NQ, 3)
-        rotations = rotations.reshape(B, NQ, 6)
-        sizes = sizes.reshape(B, NQ, 2)
-        return center_offsets, rotations, sizes
+        normal = self.normal_head(x) # B*NQ, 3
+        offset = self.offset_head(x) # B*NQ, 1
+        normal = normal.reshape(B, NQ, 3)
+        offset = offset.reshape(B, NQ, 1)
+        return normal, offset
 
 
 class MSDeformableAttention(nn.Module):
@@ -708,7 +703,7 @@ class RTDETRTransformerv2(nn.Module):
         
         return xyz_mapping
 
-    def forward(self, feats, feat_high_res, targets=None):
+    def forward(self, feats, feat_high_res, sparse_xyzs, targets=None):
         # input projection and embedding
         proj_feats, memory, spatial_shapes = self._get_encoder_input(feats)
         
@@ -729,7 +724,7 @@ class RTDETRTransformerv2(nn.Module):
         out_featmap = feat_high_res1 + feat_high_res2
 
         mask_embedding = self.dec_mask_embed(out_featmap.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
-        out_depth = self.dec_depth_head(out_featmap.permute(0, 2, 3, 1)).squeeze(-1)
+        # out_depth = self.dec_depth_head(out_featmap.permute(0, 2, 3, 1)).squeeze(-1)
 
         # prepare denoising training
         if self.training and self.num_denoising > 0:
@@ -772,32 +767,32 @@ class RTDETRTransformerv2(nn.Module):
         topk = 1000
         nq = out_masks.shape[1]
         h, w = out_featmap.shape[2:]
-        out_depth_detach = out_depth.detach()
+        # out_depth_detach = out_depth.detach()
         out_masks_detach = out_masks.detach()
-        xyz_points = self._depth_to_xyz(out_depth_detach, targets).flatten(2) # b, 3, h*w
+        xyz_points = F.interpolate(sparse_xyzs, size=(h, w), mode="nearest").flatten(2)
+        valid_mask = (xyz_points[:, 2, :] > 0).float().unsqueeze(1)
+        # xyz_points = self._depth_to_xyz(out_depth_detach, targets).flatten(2) # b, 3, h*w
         query_weights = F.sigmoid(out_masks_detach).flatten(2)  # b, nq, h*w
         rgb_embeddings = torch.einsum('bqn,bcn->bqc', query_weights, out_featmap.flatten(2)) / (query_weights.sum(dim=-1, keepdim=True) + 1e-1)
-        _, top_k_indices = torch.topk(query_weights + torch.rand_like(query_weights) * 0.2, k=topk, dim=-1) # b, nq, topk
+        _, top_k_indices = torch.topk(query_weights + torch.rand_like(query_weights) * 0.2 + valid_mask, k=topk, dim=-1) # b, nq, topk
         query_weights = torch.gather(query_weights, dim=-1, index=top_k_indices) # b, nq, topk
         xyz_points = torch.gather(xyz_points.unsqueeze(1).expand(-1, nq, -1, -1), dim=-1, 
                                   index=top_k_indices.unsqueeze(2).expand(-1, -1, 3, -1)) # b, nq, 3, topk
         query_weights_sum = query_weights.sum(dim=-1) # b, nq
         query_centers = (xyz_points * query_weights.unsqueeze(2)).sum(dim=-1) / query_weights_sum.unsqueeze(-1) # b, nq, 3
         query_centered_points = xyz_points - query_centers.unsqueeze(-1) # b, nq, 3, topk
-        center_offset, rotation, size = self.dec_pointnet(query_centered_points, query_weights, rgb_embeddings)
-        query_centers = query_centers + center_offset
-        query_rotations = rotation
-        query_sizes = size
+        normals, offsets = self.dec_pointnet(query_centered_points, query_weights, rgb_embeddings)  # TODO: center_offset -> offset ?
+        query_normals = normals
+        query_offsets = - torch.sum(query_centers * query_normals, dim=-1, keepdim=True) + offsets
         
         out = {'pred_logits': out_logits[-1], 
                'pred_boxes': out_bboxes[-1], 
                'pred_quads': out_quads[-1], 
                'pred_weights': out_weights[-1],
-               'pred_depths': out_depth,
+            #    'pred_depths': out_depth,
                'pred_masks': out_masks,
-               'pred_centers': query_centers,
-               'pred_rotations': query_rotations,
-               'pred_sizes': query_sizes,
+               'pred_normals': query_normals,
+               'pred_offsets': query_offsets,
                }
 
         if self.training and self.aux_loss:

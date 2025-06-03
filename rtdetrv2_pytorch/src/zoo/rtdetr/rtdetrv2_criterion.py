@@ -115,38 +115,37 @@ class RTDETRCriterionv2(nn.Module):
         losses['loss_giou'] = loss_giou.sum() / num_boxes
         return losses
     
-    def loss_quads(self, outputs, targets, indices, num_boxes, **kwargs):
+    def loss_quads2d(self, outputs, targets, indices, num_boxes, **kwargs):
         assert 'pred_quads' in outputs
         idx = self._get_src_permutation_idx(indices)
         src_quads = outputs['pred_quads'][idx]
-        src_weights = outputs['pred_weights'][idx]
-
-        target_quads = torch.cat([t['coords'][i] for t, (_, i) in zip(targets, indices)], dim=0)
-        target_weights_list = []
-        for t, (_, i) in zip(targets, indices):
-            if 'weights' not in t:
-                raise ValueError("Target weights not found in one or more targets.")
-            if i.numel() > 0: # only gather if there are matched indices for this target
-                target_weights_list.append(t['weights'][i])
+        target_quads = torch.cat([t['coords2d'][i] for t, (_, i) in zip(targets, indices)], dim=0)
 
         losses = {}
-        loss_quads = F.l1_loss(src_quads, target_quads, reduction='none')
+        loss_quads2d = F.l1_loss(src_quads, target_quads, reduction='none')
 
-        if not target_weights_list:
-            loss_weights = torch.zeros(1, device=src_weights.device, requires_grad=True)[0]
-            loss_length_consistency = torch.zeros(1, device=src_weights.device, requires_grad=True)[0]
-        else:
-            target_weights = torch.cat(target_weights_list, dim=0)
-            assert src_weights.shape[0] == target_weights.shape[0], 'src_weights and target_weights shape mismatch'
+        # src_weights = outputs['pred_weights'][idx]
+        # target_weights_list = []
+        # for t, (_, i) in zip(targets, indices):
+        #     if 'weights' not in t:
+        #         raise ValueError("Target weights not found in one or more targets.")
+        #     if i.numel() > 0: # only gather if there are matched indices for this target
+        #         target_weights_list.append(t['weights'][i])
+        # if not target_weights_list:
+        #     loss_weights = torch.zeros(1, device=src_weights.device, requires_grad=True)[0]
+        #     loss_length_consistency = torch.zeros(1, device=src_weights.device, requires_grad=True)[0]
+        # else:
+        #     target_weights = torch.cat(target_weights_list, dim=0)
+        #     assert src_weights.shape[0] == target_weights.shape[0], 'src_weights and target_weights shape mismatch'
 
-            loss_weights = F.l1_loss(src_weights, target_weights, reduction='none')
-            loss_length_consistency = self.loss_consistency_per_quad(outputs, targets, indices)
-            mask_good_quads = (loss_weights.mean(axis=-1) < 0.1) & (loss_quads.max(axis=-1)[0] < 0.01)
-            loss_length_consistency = (loss_length_consistency * mask_good_quads).sum() / (mask_good_quads.sum() + 1e-7)
+        #     loss_weights = F.l1_loss(src_weights, target_weights, reduction='none')
+        #     loss_length_consistency = self.loss_consistency_per_quad(outputs, targets, indices)
+        #     mask_good_quads = (loss_weights.mean(axis=-1) < 0.1) & (loss_quads.max(axis=-1)[0] < 0.01)
+        #     loss_length_consistency = (loss_length_consistency * mask_good_quads).sum() / (mask_good_quads.sum() + 1e-7)
 
-        losses['loss_quads'] = loss_quads.sum() / num_boxes
-        losses['loss_weights'] = loss_weights.sum() / num_boxes
-        losses['loss_length_consistency'] = loss_length_consistency
+        losses['loss_quads2d'] = loss_quads2d.sum() / num_boxes
+        # losses['loss_weights'] = loss_weights.sum() / num_boxes
+        # losses['loss_length_consistency'] = loss_length_consistency
 
         return losses
     
@@ -294,6 +293,20 @@ class RTDETRCriterionv2(nn.Module):
         return {'loss_quads3d_center': loss_quads3d_center.sum() / num_boxes,
                 'loss_quads3d_rotation': loss_quads3d_rotation.sum() / num_boxes,
                 'loss_quads3d_size': loss_quads3d_size.sum() / num_boxes}
+    
+    def loss_planes(self, outputs, targets, indices, num_boxes, **kwargs):
+        assert 'pred_normals' in outputs, "'pred_normals' not found in outputs."
+        assert 'pred_offsets' in outputs, "'pred_offsets' not found in outputs."
+        idx = self._get_src_permutation_idx(indices)
+        src_normals = outputs['pred_normals'][idx]
+        target_normals = torch.cat([t['normals'][i] for t, (_, i) in zip(targets, indices)], dim=0)
+        src_offsets = outputs['pred_offsets'][idx]
+        target_offsets = torch.cat([t['offsets'][i] for t, (_, i) in zip(targets, indices)], dim=0).unsqueeze(-1)
+        
+        loss_plane_normal = F.l1_loss(src_normals, target_normals, reduction='none')
+        loss_plane_offset = F.l1_loss(src_offsets, target_offsets, reduction='none')
+        return {'loss_plane_normal': loss_plane_normal.sum() / num_boxes,
+                'loss_plane_offset': loss_plane_offset.sum() / num_boxes}
         
 
     def _get_src_permutation_idx(self, indices):
@@ -313,10 +326,11 @@ class RTDETRCriterionv2(nn.Module):
             'boxes': self.loss_boxes,
             'focal': self.loss_labels_focal,
             'vfl': self.loss_labels_vfl,
-            'quads': self.loss_quads,
+            'quads2d': self.loss_quads2d,
             'masks': self.loss_masks,
             'depth': self.loss_depth,
             'quads3d': self.loss_quads3d,
+            'planes': self.loss_planes,
         }
         assert loss in loss_map, f'do you really want to compute {loss} loss?'
         return loss_map[loss](outputs, targets, indices, num_boxes, **kwargs)
@@ -356,7 +370,7 @@ class RTDETRCriterionv2(nn.Module):
                     matched = self.matcher(aux_outputs, targets)
                     indices = matched['indices']
                 for loss in self.losses:
-                    if loss in ['masks', 'depth', 'quads3d']:
+                    if loss in ['masks', 'depth', 'quads2d', 'quads3d', 'planes']:
                         continue
                     meta = self.get_loss_meta_info(loss, aux_outputs, targets, indices)
                     l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_boxes, **meta)
@@ -371,7 +385,7 @@ class RTDETRCriterionv2(nn.Module):
             dn_num_boxes = num_boxes * outputs['dn_meta']['dn_num_group']
             for i, aux_outputs in enumerate(outputs['dn_aux_outputs']):
                 for loss in self.losses:
-                    if loss in ['quads', 'masks', 'depth', 'quads3d']:
+                    if loss in ['masks', 'depth', 'quads2d', 'quads3d', 'planes']:
                         continue
                     meta = self.get_loss_meta_info(loss, aux_outputs, targets, indices)
                     l_dict = self.get_loss(loss, aux_outputs, targets, indices, dn_num_boxes, **meta)
@@ -396,7 +410,7 @@ class RTDETRCriterionv2(nn.Module):
                 matched = self.matcher(aux_outputs, targets)
                 indices = matched['indices']
                 for loss in self.losses:
-                    if loss in ['quads', 'masks', 'depth', 'quads3d']:
+                    if loss in ['masks', 'depth', 'quads2d', 'quads3d', 'planes']:
                         continue
                     meta = self.get_loss_meta_info(loss, aux_outputs, enc_targets, indices)
                     l_dict = self.get_loss(loss, aux_outputs, enc_targets, indices, num_boxes, **meta)
