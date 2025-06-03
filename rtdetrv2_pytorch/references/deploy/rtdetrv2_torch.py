@@ -5,6 +5,7 @@ import os
 import json
 import torch
 import torch.nn as nn 
+import torch.nn.functional as F
 import torchvision.transforms as T
 
 import numpy as np 
@@ -54,8 +55,8 @@ def main(args, ):
             self.model = cfg.model.deploy()
             self.postprocessor = cfg.postprocessor.deploy()
             
-        def forward(self, images, orig_target_sizes):
-            outputs = self.model(images)
+        def forward(self, images, orig_target_sizes, targets):
+            outputs = self.model(images, targets)
             outputs = self.postprocessor(outputs, orig_target_sizes)
             return outputs
 
@@ -63,9 +64,29 @@ def main(args, ):
     model.eval()
 
     im_files = sorted(glob(os.path.join(args.im_dir, '*.png')))
-    prediction = dict()
-    for im_file in tqdm(im_files):
+    xyz_files = sorted(glob(os.path.join(args.im_dir, '../xyz', '*.npz')))
+    # prediction = dict()
+    for im_file, xyz_file in tqdm(zip(im_files, xyz_files)):
         im_pil = Image.open(im_file).convert('RGB')
+        # depth preprocessing
+        depth = np.load(xyz_file)['xyz_mapping'][:, :, 2]
+        depth = torch.from_numpy(depth).float().unsqueeze(0) # (1, 1024, 1024)
+        depth = F.interpolate(
+            depth.unsqueeze(0),
+            size=(640, 640),
+            mode='nearest'
+        ).squeeze(0)
+        depth = torch.log(torch.clamp(depth, 0.0, 100.0) + 1)
+        # sample 2% of the depth points
+        sparse_depth = torch.zeros_like(depth)
+        num_points = depth.numel()
+        num_samples = int(num_points * 0.02)
+        if num_samples > 0:
+            row_indices = torch.randint(0, depth.shape[1], (num_samples,))
+            col_indices = torch.randint(0, depth.shape[2], (num_samples,))
+            sparse_depth[:, row_indices, col_indices] = depth[:, row_indices, col_indices]
+            
+
         w, h = im_pil.size
         orig_size = torch.tensor([w, h])[None].to(args.device)
 
@@ -74,24 +95,46 @@ def main(args, ):
             T.ToTensor(),
         ])
         im_data = transforms(im_pil)[None].to(args.device)
+        sparse_depth = sparse_depth.unsqueeze(0).to(args.device)
+
+        sample = torch.cat([im_data, sparse_depth], dim=1)
+        # hack
+        targets = [{
+            "orig_size": torch.tensor([1024, 1024]).float().to(args.device),
+            "camera_Ks": torch.tensor([295.6033378250885, 512.0, 295.6033378250885, 512.0]).unsqueeze(0).to(args.device),
+        }]
 
         with torch.no_grad():
-            output = model(im_data, orig_size)
-        labels, boxes, scores, quads, normals = output
+            output = model(sample, orig_size, targets)
+        labels, boxes, scores, quads, weights, depths, masks, centers, rotations, sizes = output
+        boxes = boxes.squeeze(0).cpu().numpy()
+        labels = labels.squeeze(0).cpu().numpy()
+        scores = scores.squeeze(0).cpu().numpy()
+        centers = centers.squeeze(0).cpu().numpy()
+        rotations = rotations.squeeze(0).cpu().numpy()
+        sizes = sizes.squeeze(0).cpu().numpy()
+        masks = masks.squeeze(0).cpu().numpy()
 
-        prediction[os.path.basename(im_file)] = {
-            'boxes': boxes[0].cpu().numpy().tolist(),
-            'labels': labels[0].cpu().numpy().tolist(),
-            'scores': scores[0].cpu().numpy().tolist(),
-            'quads': (quads[0].cpu().numpy()).tolist(),
-            'normals': normals[0].cpu().numpy().tolist(),
-        }
+        indices = scores > 0.6
+        boxes = boxes[indices]
+        labels = labels[indices]
+        scores = scores[indices]
+        centers = centers[indices]
+        rotations = rotations[indices]
+        sizes = sizes[indices]
+        masks = masks[indices]
+        depth = (torch.exp(depths) - 1).squeeze(0).cpu().numpy()
+        np.savez_compressed(f'prediction_{os.path.basename(im_file).replace("png", "npz")}', 
+                            boxes=boxes,
+                            labels=labels,
+                            scores=scores,
+                            centers=centers,
+                            rotations=rotations,
+                            sizes=sizes,
+                            depth=depth, 
+                            masks=masks)
 
         # draw([im_pil], labels, boxes, scores)
-
-    with open('prediction.json', 'w') as f:
-        json.dump(prediction, f, indent=2)
-
 
 if __name__ == '__main__':
     import argparse
