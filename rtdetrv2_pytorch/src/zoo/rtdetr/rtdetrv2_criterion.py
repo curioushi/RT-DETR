@@ -370,7 +370,7 @@ class RTDETRCriterionv2(nn.Module):
                     matched = self.matcher(aux_outputs, targets)
                     indices = matched['indices']
                 for loss in self.losses:
-                    if loss in ['masks', 'depth', 'quads2d', 'quads3d', 'planes']:
+                    if loss in ['masks', 'depth', 'quads3d', 'planes']:
                         continue
                     meta = self.get_loss_meta_info(loss, aux_outputs, targets, indices)
                     l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_boxes, **meta)
