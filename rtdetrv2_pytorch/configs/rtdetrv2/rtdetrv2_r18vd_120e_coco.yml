@@ -7,7 +7,7 @@ __include__: [
 ]
 
 
-output_dir: ./output/rtdetrv2_0603_quad2d_plane_sp10_gt_depth_fix_topk
+output_dir: ./output/rtdetrv2_0604_quad2d_plane_more_iterations
 
 
 PResNet:

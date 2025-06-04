@@ -290,6 +290,7 @@ class TransformerDecoder(nn.Module):
     def __init__(self, hidden_dim, decoder_layer, num_layers, eval_idx=-1):
         super(TransformerDecoder, self).__init__()
         self.layers = nn.ModuleList([copy.deepcopy(decoder_layer) for _ in range(num_layers)])
+        self.layers2 = nn.ModuleList([copy.deepcopy(decoder_layer) for _ in range(num_layers)])
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
         self.eval_idx = eval_idx if eval_idx >= 0 else num_layers + eval_idx
@@ -318,17 +319,9 @@ class TransformerDecoder(nn.Module):
         for i, layer in enumerate(self.layers):
             ref_points_input = ref_points_detach.unsqueeze(2)
             query_pos_embed = query_pos_head(ref_points_detach)
-
             output = layer(output, ref_points_input, memory, memory_spatial_shapes, attn_mask, memory_mask, query_pos_embed)
 
             inter_ref_bbox = F.sigmoid(bbox_head[i](output) + inverse_sigmoid(ref_points_detach))
-            if i == 0:
-                cx, cy, w, h = inter_ref_bbox[:, :, 0], inter_ref_bbox[:, :, 1], inter_ref_bbox[:, :, 2], inter_ref_bbox[:, :, 3]
-                ref_quads_detach = torch.stack([cx + w/2, cy + h/2,
-                                                cx - w/2, cy + h/2,
-                                                cx - w/2, cy - h/2,
-                                                cx + w/2, cy - h/2], dim=-1)
-            inter_ref_quads = quad_head[i](output) + ref_quads_detach
             
             predicted_weights = weights_head[i](output)
 
@@ -338,22 +331,45 @@ class TransformerDecoder(nn.Module):
 
                 if i == 0:
                     dec_out_bboxes.append(inter_ref_bbox)
-                    dec_out_quads.append(inter_ref_quads)
                 else:
                     dec_out_bboxes.append(F.sigmoid(bbox_head[i](output) + inverse_sigmoid(ref_points)))
-                    dec_out_quads.append(quad_head[i](output) + ref_quads)
 
             elif i == self.eval_idx:
                 dec_out_logits.append(score_head[i](output))
                 dec_out_bboxes.append(inter_ref_bbox)
-                dec_out_quads.append(inter_ref_quads)
                 dec_out_weights.append(predicted_weights)
                 break
 
             ref_points = inter_ref_bbox
             ref_points_detach = inter_ref_bbox.detach()
+
+        cx, cy, w, h = ref_points_detach[:, :, 0], ref_points_detach[:, :, 1], ref_points_detach[:, :, 2], ref_points_detach[:, :, 3]
+        ref_quads_detach = torch.stack([cx + w/2, cy + h/2,
+                                        cx - w/2, cy + h/2,
+                                        cx - w/2, cy - h/2,
+                                        cx + w/2, cy - h/2], dim=-1)
+
+        
+        for i, layer in enumerate(self.layers2):
+            ref_points_input = ref_points_detach.unsqueeze(2)
+            query_pos_embed = query_pos_head(ref_points_detach)
+            output = layer(output, ref_points_input, memory, memory_spatial_shapes, attn_mask, memory_mask, query_pos_embed)
+
+            inter_ref_quads = quad_head[i](output) + ref_quads_detach
+
+            if self.training:
+                if i == 0:
+                    dec_out_quads.append(inter_ref_quads)
+                else:
+                    dec_out_quads.append(quad_head[i](output) + ref_quads)
+
+            elif i == self.eval_idx:
+                dec_out_quads.append(inter_ref_quads)
+                break
+
             ref_quads = inter_ref_quads
             ref_quads_detach = inter_ref_quads.detach()
+
         
         mask_query = mask_head(output)
         dec_out_masks = torch.einsum('bqc,bchw->bqhw', mask_query, mask_embedding)
