@@ -129,7 +129,7 @@ def project_3d_to_2d(center, rotation, size, camera_K):
     return quads
 
 @torch.no_grad()
-def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, data_loader, coco_evaluator: CocoEvaluator, device, output_dir: str):
+def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, data_loader, coco_evaluator: CocoEvaluator, device, epoch, output_dir: str, **kwargs):
     model.eval()
     criterion.eval()
     coco_evaluator.cleanup()
@@ -137,13 +137,24 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
 
     metric_logger = MetricLogger(delimiter="  ")
     header = 'Test:'
+    writer = kwargs.get('writer', None)
     
     for samples, sparse_xyzs, targets in metric_logger.log_every(data_loader, 10, header):
         samples = samples.to(device)
         sparse_xyzs = sparse_xyzs.to(device)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
+        for target in targets:
+            target['boxes_xyxy'] = target['boxes']
+            x1, y1, x2, y2 = target['boxes_xyxy'][:, 0], target['boxes_xyxy'][:, 1], target['boxes_xyxy'][:, 2], target['boxes_xyxy'][:, 3]
+            cx, cy, w, h = (x1 + x2) / 2, (y1 + y2) / 2, x2 - x1, y2 - y1
+            target['boxes'] = torch.stack([cx, cy, w, h], dim=1) / 640.0
+
         outputs = model(samples, sparse_xyzs, targets=targets)
+        loss_dict = criterion(outputs, targets)
+        if writer and dist_utils.is_main_process():
+            for k, v in loss_dict.items():
+                writer.add_scalar(f'Test/{k}', v.item(), epoch)
 
         # TODO (lyuwenyu), fix dataset converted using `convert_to_coco_api`?
         orig_target_sizes = torch.stack([t["orig_size"] for t in targets], dim=0)
@@ -178,7 +189,7 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
                 image_id_val = target['image_id'].item()
 
                 # 2. Draw Ground Truth boxes
-                gt_boxes_tensor = target['boxes'] 
+                gt_boxes_tensor = target['boxes_xyxy'] 
                 gt_labels_tensor = target['labels']
                 gt_masks_tensor = target['masks']
                 # gt_depth_tensor = (torch.exp(target['depth']) - 1).squeeze(0)
@@ -281,11 +292,10 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
                         colored_mask[mask] = np.random.randint(0, 255, 3)
                 img_pred_vis = cv2.addWeighted(img_pred_vis, 0.8, colored_mask, 0.2, 0)
 
-                datetime_str = datetime.now().strftime('%Y%m%d_%H%M%S')
-                with open(os.path.join(output_dir, f"predictions_{image_id_val}_{datetime_str}.json"), "w") as f:
+                with open(os.path.join(output_dir, f"predictions_{image_id_val}_{epoch}.json"), "w") as f:
                     json.dump(json_data, f)
 
-                filename_pred_box = os.path.join(output_dir, f"image_{image_id_val}_pred_box_{datetime_str}.png")
+                filename_pred_box = os.path.join(output_dir, f"image_{image_id_val}_pred_{epoch}.png")
                 cv2.imwrite(filename_pred_box, img_pred_vis)
                 # filename_pred_depth = os.path.join(output_dir, f"image_{image_id_val}_pred_depth_{datetime_str}.png")
                 # cv2.imwrite(filename_pred_depth, pred_depth_np)

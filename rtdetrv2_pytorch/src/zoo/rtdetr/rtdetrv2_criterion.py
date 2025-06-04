@@ -243,8 +243,11 @@ class RTDETRCriterionv2(nn.Module):
         assert 'pred_masks' in outputs
         idx = self._get_src_permutation_idx(indices)
         src_masks = outputs['pred_masks'][idx]
-        h, w = src_masks.shape[1:]
         target_masks = torch.cat([t['masks'][i] for t, (_, i) in zip(targets, indices)], dim=0)
+        h, w = target_masks.shape[1:]
+        assert h % 2 == 0 and w % 2 == 0, 'h and w must be even'
+        h, w = h // 2, w // 2
+        src_masks = F.interpolate(src_masks.unsqueeze(1), size=(h, w), mode='bilinear', align_corners=False).squeeze(1)
         target_masks = F.interpolate(target_masks.unsqueeze(1), size=(h, w), mode='bilinear', align_corners=False).squeeze(1)
         loss_mask_bce = F.binary_cross_entropy_with_logits(src_masks, target_masks, reduction='none').flatten(1)
 

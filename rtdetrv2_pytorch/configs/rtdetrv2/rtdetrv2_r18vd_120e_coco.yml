@@ -7,7 +7,7 @@ __include__: [
 ]
 
 
-output_dir: ./output/rtdetrv2_0604_quad2d_plane_more_iterations
+output_dir: ./output/rtdetrv2_0604_quad2d_plane_more_iterations_mask
 
 
 PResNet:
