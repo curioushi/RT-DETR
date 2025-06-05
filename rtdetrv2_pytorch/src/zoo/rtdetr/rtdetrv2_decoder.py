@@ -783,20 +783,23 @@ class RTDETRTransformerv2(nn.Module):
         topk = 1000
         nq = out_masks.shape[1]
         h, w = out_featmap.shape[2:]
-        # out_depth_detach = out_depth.detach()
         out_masks_detach = out_masks.detach()
-        xyz_points = F.interpolate(sparse_xyzs, size=(h, w), mode="nearest").flatten(2)
-        valid_mask = (xyz_points[:, 2, :] > 0).float().unsqueeze(1)
-        # xyz_points = self._depth_to_xyz(out_depth_detach, targets).flatten(2) # b, 3, h*w
+        # weighted average of rgb features
         query_weights = F.sigmoid(out_masks_detach).flatten(2)  # b, nq, h*w
         rgb_embeddings = torch.einsum('bqn,bcn->bqc', query_weights, out_featmap.flatten(2)) / (query_weights.sum(dim=-1, keepdim=True) + 1e-1)
-        _, top_k_indices = torch.topk(query_weights + torch.rand_like(query_weights) * 0.2 + valid_mask, k=topk, dim=-1) # b, nq, topk
+        # extract topk
+        xyz_points = F.interpolate(sparse_xyzs, size=(h, w), mode="nearest").flatten(2)
+        valid_mask = (xyz_points[:, 2, :] > 0).float().unsqueeze(1)
+        _, top_k_indices = torch.topk(query_weights + valid_mask + 0.2 * torch.rand_like(query_weights), k=topk, dim=-1) # b, nq, topk
+        valid_mask = torch.gather(valid_mask.expand(-1, nq, -1), dim=-1, index=top_k_indices)
         query_weights = torch.gather(query_weights, dim=-1, index=top_k_indices) # b, nq, topk
         xyz_points = torch.gather(xyz_points.unsqueeze(1).expand(-1, nq, -1, -1), dim=-1, 
                                   index=top_k_indices.unsqueeze(2).expand(-1, -1, 3, -1)) # b, nq, 3, topk
-        query_weights_sum = query_weights.sum(dim=-1) # b, nq
-        query_centers = (xyz_points * query_weights.unsqueeze(2)).sum(dim=-1) / query_weights_sum.unsqueeze(-1) # b, nq, 3
-        query_centered_points = xyz_points - query_centers.unsqueeze(-1) # b, nq, 3, topk
+        query_weights_valid = query_weights * valid_mask + 1e-7
+        query_weights_sum = query_weights_valid.sum(dim=-1) # b, nq
+        # compute center of query points
+        query_centers = (xyz_points * query_weights_valid.unsqueeze(2)).sum(dim=-1) / query_weights_sum.unsqueeze(-1) # b, nq, 3
+        query_centered_points = (xyz_points - query_centers.unsqueeze(-1)) * valid_mask.unsqueeze(2) # b, nq, 3, topk
         normals, offsets = self.dec_pointnet(query_centered_points, query_weights, rgb_embeddings)  # TODO: center_offset -> offset ?
         query_normals = normals
         query_offsets = - torch.sum(query_centers * query_normals, dim=-1, keepdim=True) + offsets
