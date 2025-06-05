@@ -219,6 +219,7 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
                 json_data["ground_truth"] = {
                     "normals": gt_normals_np.tolist(),
                     "offsets": gt_offsets_np.tolist(),
+                    "quads": gt_quads_np.tolist(),
                 }
 
                 class_to_colors = {
@@ -274,6 +275,7 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
                     "scores": pred_scores_np.tolist(),
                     "normals": pred_normals_np.tolist(),
                     "offsets": pred_offsets_np.tolist(),
+                    "quads": pred_quads_np.tolist(),
                 }
 
                 score_thresh = 0.6

@@ -780,7 +780,7 @@ class RTDETRTransformerv2(nn.Module):
             dn_out_weights, out_weights = torch.split(out_weights, dn_meta['dn_num_split'], dim=2)
             dn_out_masks, out_masks = torch.split(out_masks, dn_meta['dn_num_split'], dim=1)
         
-        topk = 1000
+        topk = 100
         nq = out_masks.shape[1]
         h, w = out_featmap.shape[2:]
         out_masks_detach = out_masks.detach()
