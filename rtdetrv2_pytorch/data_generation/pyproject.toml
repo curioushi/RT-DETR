@@ -1,0 +1,22 @@
+[project]
+name = "bproc-container"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "blenderproc>=2.8.0",
+    "imageio>=2.37.0",
+    "ipython>=9.1.0",
+    "matplotlib>=3.10.1",
+    "numpy<2",
+    "opencv-python>=4.11.0.86",
+    "pycocotools>=2.0.8",
+    "pyqt5>=5.15.11",
+    "rerun-sdk==0.21.0",
+    "scipy>=1.15.2",
+    "tqdm>=4.67.1",
+]
+
+[tool.uv]
+index-url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
