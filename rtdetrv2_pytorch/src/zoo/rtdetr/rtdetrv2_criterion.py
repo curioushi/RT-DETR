@@ -300,16 +300,19 @@ class RTDETRCriterionv2(nn.Module):
     def loss_planes(self, outputs, targets, indices, num_boxes, **kwargs):
         assert 'pred_normals' in outputs, "'pred_normals' not found in outputs."
         assert 'pred_offsets' in outputs, "'pred_offsets' not found in outputs."
+        assert 'valid_planes_mask' in outputs, "'valid_planes_mask' not found in outputs."
         idx = self._get_src_permutation_idx(indices)
         src_normals = outputs['pred_normals'][idx]
         target_normals = torch.cat([t['normals'][i] for t, (_, i) in zip(targets, indices)], dim=0)
         src_offsets = outputs['pred_offsets'][idx]
         target_offsets = torch.cat([t['offsets'][i] for t, (_, i) in zip(targets, indices)], dim=0).unsqueeze(-1)
+        valid_planes_mask = outputs['valid_planes_mask'][idx]
+        num_planes = valid_planes_mask.sum()
         
-        loss_plane_normal = F.l1_loss(src_normals, target_normals, reduction='none')
-        loss_plane_offset = F.l1_loss(src_offsets, target_offsets, reduction='none')
-        return {'loss_plane_normal': loss_plane_normal.sum() / num_boxes,
-                'loss_plane_offset': loss_plane_offset.sum() / num_boxes}
+        loss_plane_normal = F.l1_loss(src_normals, target_normals, reduction='none') * valid_planes_mask.unsqueeze(-1)
+        loss_plane_offset = F.l1_loss(src_offsets, target_offsets, reduction='none') * valid_planes_mask.unsqueeze(-1)
+        return {'loss_plane_normal': loss_plane_normal.sum() / (num_planes + 1e-7),
+                'loss_plane_offset': loss_plane_offset.sum() / (num_planes + 1e-7)}
         
 
     def _get_src_permutation_idx(self, indices):

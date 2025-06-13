@@ -780,7 +780,7 @@ class RTDETRTransformerv2(nn.Module):
             dn_out_weights, out_weights = torch.split(out_weights, dn_meta['dn_num_split'], dim=2)
             dn_out_masks, out_masks = torch.split(out_masks, dn_meta['dn_num_split'], dim=1)
         
-        topk = 100
+        topk = 1000
         nq = out_masks.shape[1]
         h, w = out_featmap.shape[2:]
         out_masks_detach = out_masks.detach()
@@ -797,6 +797,7 @@ class RTDETRTransformerv2(nn.Module):
                                   index=top_k_indices.unsqueeze(2).expand(-1, -1, 3, -1)) # b, nq, 3, topk
         query_weights_valid = query_weights * valid_mask + 1e-7
         query_weights_sum = query_weights_valid.sum(dim=-1) # b, nq
+        valid_planes_mask = query_weights_sum > 1
         # compute center of query points
         query_centers = (xyz_points * query_weights_valid.unsqueeze(2)).sum(dim=-1) / query_weights_sum.unsqueeze(-1) # b, nq, 3
         query_centered_points = (xyz_points - query_centers.unsqueeze(-1)) * valid_mask.unsqueeze(2) # b, nq, 3, topk
@@ -812,6 +813,7 @@ class RTDETRTransformerv2(nn.Module):
                'pred_masks': out_masks,
                'pred_normals': query_normals,
                'pred_offsets': query_offsets,
+               'valid_planes_mask': valid_planes_mask,
                }
 
         if self.training and self.aux_loss:
