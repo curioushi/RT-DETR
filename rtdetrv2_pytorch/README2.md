@@ -26,4 +26,5 @@ source .venv/bin/activate
 ## 数据生成
 
 相关代码位于 `data_generation` 目录
+
 需要预先准备数据 `dropped_box_2024_1220_1K` 
