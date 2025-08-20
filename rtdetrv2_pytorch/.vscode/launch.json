@@ -20,9 +20,28 @@
             "console": "integratedTerminal",
             "args": [
                 "-c",
-                "configs/rtdetrv2/rtdetrv2_r18vd_120e_coco.yml",
-                "-t",
-                "pretrained_models/rtdetrv2_r18vd_120e_coco_rerun_48.1.pth"
+                "configs/rtdetrv2/rtdetrv2_r34vd_120e_coco.yml"
+            ],
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "0"
+            },
+            "python": "${workspaceFolder}/.venv/bin/python"
+        },
+        {
+            "name": "Python Debugger: RT-DETR Inference",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/references/deploy/rtdetrv2_torch.py",
+            "console": "integratedTerminal",
+            "args": [
+                "-c",
+                "configs/rtdetrv2/rtdetrv2_r34vd_120e_coco.yml",
+                "-r",
+                "output/0820_replicate_quad_4/best.pth",
+                "-d",
+                "cuda",
+                "--im-dir",
+                "dataset/xiangcheng_boxes_0812"
             ],
             "env": {
                 "CUDA_VISIBLE_DEVICES": "0"
