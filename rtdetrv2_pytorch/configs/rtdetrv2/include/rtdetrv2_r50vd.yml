@@ -71,7 +71,7 @@ RTDETRPostProcessor:
 
 RTDETRCriterionv2:
   weight_dict: {loss_vfl: 1, loss_bbox: 5, loss_giou: 2, loss_mask_bce: 1, loss_mask_dice: 1, loss_quads2d: 1, loss_plane_normal: 1, loss_plane_offset: 1}
-  losses: ['vfl', 'boxes', 'masks', 'quads2d', 'planes']
+  losses: ['vfl', 'boxes', 'quads2d']
   alpha: 0.75
   gamma: 2.0
 

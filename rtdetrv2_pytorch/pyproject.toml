@@ -18,3 +18,7 @@ dependencies = [
     "torchvision>=0.15.2",
     "tqdm>=4.67.1",
 ]
+
+[[tool.uv.index]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true

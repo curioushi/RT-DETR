@@ -7,7 +7,7 @@ __include__: [
 ]
 
 
-output_dir: ./output/rtdetrv2_0606_quad2d_plane_fix_weighted_center3
+output_dir: ./output/0820_replicate_quad
 
 
 PResNet:

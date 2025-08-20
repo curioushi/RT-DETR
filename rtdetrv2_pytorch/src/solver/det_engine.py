@@ -42,16 +42,15 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     scaler :GradScaler = kwargs.get('scaler', None)
     lr_warmup_scheduler :Warmup = kwargs.get('lr_warmup_scheduler', None)
 
-    for i, (samples, sparse_xyzs, targets) in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
+    for i, (samples, targets) in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
         samples = samples.to(device)
-        sparse_xyzs = sparse_xyzs.to(device)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
         global_step = epoch * len(data_loader) + i
         metas = dict(epoch=epoch, step=i, global_step=global_step)
 
         if scaler is not None:
             with torch.autocast(device_type=str(device), cache_enabled=True):
-                outputs = model(samples, sparse_xyzs, targets=targets)
+                outputs = model(samples, targets=targets)
             
             with torch.autocast(device_type=str(device), enabled=False):
                 loss_dict = criterion(outputs, targets, **metas)
@@ -68,7 +67,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
             optimizer.zero_grad()
 
         else:
-            outputs = model(samples, sparse_xyzs, targets=targets)
+            outputs = model(samples, targets=targets)
             loss_dict = criterion(outputs, targets, **metas)
             
             loss : torch.Tensor = sum(loss_dict.values())
@@ -139,9 +138,8 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
     header = 'Test:'
     writer = kwargs.get('writer', None)
     
-    for samples, sparse_xyzs, targets in metric_logger.log_every(data_loader, 10, header):
+    for samples, targets in metric_logger.log_every(data_loader, 10, header):
         samples = samples.to(device)
-        sparse_xyzs = sparse_xyzs.to(device)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
         for target in targets:
@@ -150,7 +148,7 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
             cx, cy, w, h = (x1 + x2) / 2, (y1 + y2) / 2, x2 - x1, y2 - y1
             target['boxes'] = torch.stack([cx, cy, w, h], dim=1) / 640.0
 
-        outputs = model(samples, sparse_xyzs, targets=targets)
+        outputs = model(samples, targets=targets)
         loss_dict = criterion(outputs, targets)
         if writer and dist_utils.is_main_process():
             for k, v in loss_dict.items():
@@ -184,97 +182,56 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
 
                 img_gt_vis = img_bgr.copy()
                 img_pred_vis = img_bgr.copy()
-                # img_pred_vis_quad = img_bgr.copy()
 
                 image_id_val = target['image_id'].item()
 
                 # 2. Draw Ground Truth boxes
                 gt_boxes_tensor = target['boxes_xyxy'] 
                 gt_labels_tensor = target['labels']
-                gt_masks_tensor = target['masks']
-                # gt_depth_tensor = (torch.exp(target['depth']) - 1).squeeze(0)
                 gt_quads_tensor = target['coords2d']
-                gt_normals_tensor = target['normals']
-                gt_offsets_tensor = target['offsets']
-                fx, cx, fy, cy = target['camera_Ks'][0].cpu().detach().numpy()
                 w, h = target['orig_size'].cpu().detach().numpy()
-                fx = fx / w * 640
-                cx = cx / w * 640
-                fy = fy / h * 640
-                cy = cy / h * 640
-                camera_K_np = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])
-
 
                 gt_boxes_np = gt_boxes_tensor.cpu().detach().numpy()
                 gt_labels_np = gt_labels_tensor.cpu().detach().numpy()
-                gt_masks_np = gt_masks_tensor.cpu().detach().numpy()
-                # gt_depth_np = gt_depth_tensor.cpu().detach().numpy()
                 gt_quads_np = gt_quads_tensor.cpu().detach().numpy() * 640
-                gt_normals_np = gt_normals_tensor.cpu().detach().numpy()
-                gt_offsets_np = gt_offsets_tensor.cpu().detach().numpy()
-                # min_depth, max_depth = gt_depth_np.min(), gt_depth_np.max()
-                # gt_depth_np = ((gt_depth_np - min_depth) / (max_depth - min_depth) * 255).astype(np.uint8)
 
                 json_data = {}
                 json_data["ground_truth"] = {
-                    "normals": gt_normals_np.tolist(),
-                    "offsets": gt_offsets_np.tolist(),
                     "quads": gt_quads_np.tolist(),
                 }
 
                 class_to_colors = {
-                    0: (0, 255, 0),
-                    1: (255, 0, 0),
+                    0: (255, 0, 0),
+                    1: (0, 255, 0),
+                    2: (0, 0, 255),
+                    3: (255, 255, 0),
                 }
-                class_to_colors.update({ i:(0, 0, 0) for i in range(2, 500)})
+                class_to_colors.update({ i:(0, 0, 0) for i in range(4, 500)})
 
                 colored_mask = img_gt_vis.copy()
                 for i in range(gt_boxes_np.shape[0]):
                     label = gt_labels_np[i]
-                    mask = gt_masks_np[i] > 0.5
                     quads = gt_quads_np[i].reshape(4, 2)
-                    # quads = project_3d_to_2d(gt_centers_np[i], gt_rotations_np[i], gt_sizes_np[i], camera_K_np)
                     cv2.polylines(img_gt_vis, [quads.astype(np.int32)], True, class_to_colors[label], 1)
 
-                    # x1, y1, x2, y2 = gt_boxes_np[i].astype(np.int32)
-                    # cv2.rectangle(img_gt_vis, (x1, y1), (x2, y2), class_to_colors[label], 1)
-                    colored_mask[mask] = np.random.randint(0, 255, 3)
                 img_gt_vis = cv2.addWeighted(img_gt_vis, 0.8, colored_mask, 0.2, 0)
 
                 filename_gt = os.path.join(output_dir, f"image_{image_id_val}_gt.png")
                 cv2.imwrite(filename_gt, img_gt_vis)
-                # filename_gt_depth = os.path.join(output_dir, f"image_{image_id_val}_gt_depth.png")
-                # cv2.imwrite(filename_gt_depth, gt_depth_np)
 
                 # 3. Draw Prediction boxes (score > 0.6)
                 pred_boxes_tensor = output['boxes']
                 pred_scores_tensor = output['scores']
                 pred_labels_tensor = output['labels']
-                pred_masks_tensor = output['masks']
-                pred_masks_tensor = F.interpolate(pred_masks_tensor.unsqueeze(1), size=(640, 640), mode='bilinear', align_corners=False).squeeze(1)
-                pred_masks_tensor = F.sigmoid(pred_masks_tensor)
-                # pred_depth_tensor = output['depth']
-                # pred_depth_tensor = torch.exp(pred_depth_tensor) - 1
-                # pred_depth_tensor = F.interpolate(pred_depth_tensor.unsqueeze(0).unsqueeze(0), size=(640, 640), mode='nearest').squeeze(0).squeeze(0)
                 pred_quads_tensor = output['quads']
-                pred_normals_tensor = output['normals']
-                pred_offsets_tensor = output['offsets']
 
                 pred_boxes_np = pred_boxes_tensor.cpu().detach().numpy() / 1024 * 640
                 pred_scores_np = pred_scores_tensor.cpu().detach().numpy()
                 pred_labels_np = pred_labels_tensor.cpu().detach().numpy()
-                pred_masks_np = pred_masks_tensor.cpu().detach().numpy()
-                # pred_depth_np = pred_depth_tensor.cpu().detach().numpy()
-                # min_depth, max_depth = pred_depth_np.min(), pred_depth_np.max()
-                # pred_depth_np = ((pred_depth_np - min_depth) / (max_depth - min_depth) * 255).astype(np.uint8)
                 pred_quads_np = pred_quads_tensor.cpu().detach().numpy() * 640
-                pred_normals_np = pred_normals_tensor.cpu().detach().numpy()
-                pred_offsets_np = pred_offsets_tensor.cpu().detach().numpy()
 
                 json_data["predictions"] = {
                     "scores": pred_scores_np.tolist(),
-                    "normals": pred_normals_np.tolist(),
-                    "offsets": pred_offsets_np.tolist(),
                     "quads": pred_quads_np.tolist(),
                 }
 
@@ -282,16 +239,10 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
                 colored_mask = img_pred_vis.copy()
                 for i in range(pred_boxes_np.shape[0]):
                     if pred_scores_np[i] > score_thresh:
-                        box = pred_boxes_np[i]
                         label = pred_labels_np[i]
-                        mask = pred_masks_np[i] > 0.5
-                        # quads = project_3d_to_2d(pred_centers_np[i], pred_rotations_np[i], pred_sizes_np[i], camera_K_np)
                         quads = pred_quads_np[i].reshape(4, 2)
-                        cv2.polylines(img_pred_vis, [quads.astype(np.int32)], True, class_to_colors[label - 1], 1)
+                        cv2.polylines(img_pred_vis, [quads.astype(np.int32)], True, class_to_colors[label], 1)
 
-                        # xmin, ymin, xmax, ymax = int(box[0]), int(box[1]), int(box[2]), int(box[3])
-                        # cv2.rectangle(img_pred_vis, (xmin, ymin), (xmax, ymax), class_to_colors[label - 1], 1)
-                        colored_mask[mask] = np.random.randint(0, 255, 3)
                 img_pred_vis = cv2.addWeighted(img_pred_vis, 0.8, colored_mask, 0.2, 0)
 
                 with open(os.path.join(output_dir, f"predictions_{image_id_val}_{epoch}.json"), "w") as f:
@@ -299,8 +250,6 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
 
                 filename_pred_box = os.path.join(output_dir, f"image_{image_id_val}_pred_{epoch}.png")
                 cv2.imwrite(filename_pred_box, img_pred_vis)
-                # filename_pred_depth = os.path.join(output_dir, f"image_{image_id_val}_pred_depth_{datetime_str}.png")
-                # cv2.imwrite(filename_pred_depth, pred_depth_np)
                 cv2.imwrite(os.path.join(output_dir, "latest.png"), img_pred_vis)
         if coco_evaluator is not None:
             coco_evaluator.update(res)

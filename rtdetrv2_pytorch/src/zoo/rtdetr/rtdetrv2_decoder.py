@@ -719,7 +719,7 @@ class RTDETRTransformerv2(nn.Module):
         
         return xyz_mapping
 
-    def forward(self, feats, feat_high_res, sparse_xyzs, targets=None):
+    def forward(self, feats, feat_high_res, targets=None):
         # input projection and embedding
         proj_feats, memory, spatial_shapes = self._get_encoder_input(feats)
         
@@ -777,47 +777,14 @@ class RTDETRTransformerv2(nn.Module):
             dn_out_bboxes, out_bboxes = torch.split(out_bboxes, dn_meta['dn_num_split'], dim=2)
             dn_out_logits, out_logits = torch.split(out_logits, dn_meta['dn_num_split'], dim=2)
             dn_out_quads, out_quads = torch.split(out_quads, dn_meta['dn_num_split'], dim=2)
-            dn_out_weights, out_weights = torch.split(out_weights, dn_meta['dn_num_split'], dim=2)
-            dn_out_masks, out_masks = torch.split(out_masks, dn_meta['dn_num_split'], dim=1)
-        
-        topk = 1000
-        nq = out_masks.shape[1]
-        h, w = out_featmap.shape[2:]
-        out_masks_detach = out_masks.detach()
-        # weighted average of rgb features
-        query_weights = F.sigmoid(out_masks_detach).flatten(2)  # b, nq, h*w
-        rgb_embeddings = torch.einsum('bqn,bcn->bqc', query_weights, out_featmap.flatten(2)) / (query_weights.sum(dim=-1, keepdim=True) + 1e-1)
-        # extract topk
-        xyz_points = F.interpolate(sparse_xyzs, size=(h, w), mode="nearest").flatten(2)
-        valid_mask = (xyz_points[:, 2, :] > 0).float().unsqueeze(1)
-        _, top_k_indices = torch.topk(query_weights + valid_mask + 0.2 * torch.rand_like(query_weights), k=topk, dim=-1) # b, nq, topk
-        valid_mask = torch.gather(valid_mask.expand(-1, nq, -1), dim=-1, index=top_k_indices)
-        query_weights = torch.gather(query_weights, dim=-1, index=top_k_indices) # b, nq, topk
-        xyz_points = torch.gather(xyz_points.unsqueeze(1).expand(-1, nq, -1, -1), dim=-1, 
-                                  index=top_k_indices.unsqueeze(2).expand(-1, -1, 3, -1)) # b, nq, 3, topk
-        query_weights_valid = query_weights * valid_mask + 1e-7
-        query_weights_sum = query_weights_valid.sum(dim=-1) # b, nq
-        valid_planes_mask = query_weights_sum > 1
-        # compute center of query points
-        query_centers = (xyz_points * query_weights_valid.unsqueeze(2)).sum(dim=-1) / query_weights_sum.unsqueeze(-1) # b, nq, 3
-        query_centered_points = (xyz_points - query_centers.unsqueeze(-1)) * valid_mask.unsqueeze(2) # b, nq, 3, topk
-        normals, offsets = self.dec_pointnet(query_centered_points, query_weights, rgb_embeddings)  # TODO: center_offset -> offset ?
-        query_normals = normals
-        query_offsets = - torch.sum(query_centers * query_normals, dim=-1, keepdim=True) + offsets
         
         out = {'pred_logits': out_logits[-1], 
                'pred_boxes': out_bboxes[-1], 
-               'pred_quads': out_quads[-1], 
-               'pred_weights': out_weights[-1],
-            #    'pred_depths': out_depth,
-               'pred_masks': out_masks,
-               'pred_normals': query_normals,
-               'pred_offsets': query_offsets,
-               'valid_planes_mask': valid_planes_mask,
+               'pred_quads': out_quads[-1]
                }
 
         if self.training and self.aux_loss:
-            out['aux_outputs'] = self._set_aux_loss(out_logits[:-1], out_bboxes[:-1], out_quads[:-1], out_weights[:-1])
+            out['aux_outputs'] = self._set_aux_loss(out_logits[:-1], out_bboxes[:-1], out_quads[:-1])
             out['enc_aux_outputs'] = self._set_aux_loss(enc_topk_logits_list, enc_topk_bboxes_list)
             out['enc_meta'] = {'class_agnostic': self.query_select_method == 'agnostic'}
 
@@ -830,15 +797,15 @@ class RTDETRTransformerv2(nn.Module):
 
 
     @torch.jit.unused
-    def _set_aux_loss(self, outputs_class, outputs_coord, outputs_quad=None, outputs_weight=None):
+    def _set_aux_loss(self, outputs_class, outputs_coord, outputs_quad=None):
         # this is a workaround to make torchscript happy, as torchscript
         # doesn't support dictionary with non-homogeneous values, such
         # as a dict having both a Tensor and a list.
-        if outputs_quad is not None and outputs_weight is not None:
-            return [{'pred_logits': a, 'pred_boxes': b, 'pred_quads': c, 'pred_weights': d}
-                    for a, b, c, d in zip(outputs_class, outputs_coord, outputs_quad, outputs_weight)]
-        elif outputs_quad is None and outputs_weight is None:
+        if outputs_quad is not None:
+            return [{'pred_logits': a, 'pred_boxes': b, 'pred_quads': c}
+                    for a, b, c in zip(outputs_class, outputs_coord, outputs_quad)]
+        elif outputs_quad is None:
             return [{'pred_logits': a, 'pred_boxes': b}
                     for a, b in zip(outputs_class, outputs_coord)]
         else:
-            raise ValueError('outputs_quad and outputs_weight must be either both None or both not None')
+            raise ValueError('outputs_quad must be either both None or both not None')

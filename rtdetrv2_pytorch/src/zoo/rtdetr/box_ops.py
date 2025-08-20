@@ -50,8 +50,13 @@ def generalized_box_iou(boxes1, boxes2):
     """
     # degenerate boxes gives inf / nan results
     # so do an early check
-    assert (boxes1[:, 2:] >= boxes1[:, :2]).all()
-    assert (boxes2[:, 2:] >= boxes2[:, :2]).all()
+    # assert (boxes1[:, 2:] >= boxes1[:, :2]).all()
+    if not (boxes1[:, 2:] >= boxes1[:, :2]).all():
+        # Print debug information
+        invalid_boxes1 = ~(boxes1[:, 2:] >= boxes1[:, :2]).all(dim=1)
+        print(f"Invalid boxes1 detected: {invalid_boxes1.sum()} boxes")
+        print(f"Sample invalid boxes1: {boxes1[invalid_boxes1][:5]}")
+        raise ValueError("boxes1 contains invalid boxes where x1 < x0 or y1 < y0")
     iou, union = box_iou(boxes1, boxes2)
 
     lt = torch.min(boxes1[:, None, :2], boxes2[:, :2])

@@ -39,11 +39,11 @@ class RTDETR(nn.Module):
         self.decoder = decoder
         self.encoder = encoder
         
-    def forward(self, x, sparse_xyzs, targets=None):
+    def forward(self, x, targets=None):
         x = self.backbone(x)
         x_high_res, x = x[0], x[1:]
         x = self.encoder(x)
-        x = self.decoder(x, x_high_res, sparse_xyzs, targets)
+        x = self.decoder(x, x_high_res, targets=targets)
 
         return x
     

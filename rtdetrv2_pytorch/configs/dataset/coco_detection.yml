@@ -10,17 +10,17 @@ evaluator:
 # num_classes: 91
 # remap_mscoco_category: False
 
-num_classes: 80
-remap_mscoco_category: True
+num_classes: 4
+remap_mscoco_category: False
 
 
 train_dataloader: 
   type: DataLoader
   dataset: 
     type: CocoDetection
-    img_folder: ./dataset/bproc-container-08/train/images
-    ann_file: ./dataset/bproc-container-08/train/annotations.json
-    return_masks: True
+    img_folder: ./dataset/replicate_20250820_coco/images
+    ann_file: ./dataset/replicate_20250820_coco/annotations/train_labels.json
+    return_masks: False
     transforms:
       type: Compose
       ops: ~
@@ -35,9 +35,9 @@ val_dataloader:
   type: DataLoader
   dataset: 
     type: CocoDetection
-    img_folder: ./dataset/bproc-container-08/val/images
-    ann_file: ./dataset/bproc-container-08/val/annotations.json
-    return_masks: True
+    img_folder: ./dataset/replicate_20250820_coco/images
+    ann_file: ./dataset/replicate_20250820_coco/annotations/val_labels.json
+    return_masks: False
     transforms:
       type: Compose
       ops: ~ 

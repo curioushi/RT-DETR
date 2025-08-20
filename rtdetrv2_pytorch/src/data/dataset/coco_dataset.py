@@ -36,40 +36,24 @@ class CocoDetection(torchvision.datasets.CocoDetection, DetDataset):
         self._transforms = transforms
         self.prepare = ConvertCocoPolysToMask(return_masks)
         self.img_folder = img_folder
-        self.xyz_folder = osp.join(osp.dirname(img_folder), 'xyz')
         self.ann_file = ann_file
         self.return_masks = return_masks
         self.remap_mscoco_category = remap_mscoco_category
 
     def __getitem__(self, idx):
-        img, target, xyz_mapping = self.load_item(idx)
+        img, target = self.load_item(idx)
         if self._transforms is not None:
             img, target, _ = self._transforms(img, target, self)
-
-        xyz_mapping = torch.from_numpy(xyz_mapping).float().permute(2, 0, 1) # (3, 1024, 1024)
-        valid_depth_mask = xyz_mapping[2] < 100
-        xyz_mapping[:, ~valid_depth_mask] = 0
-        sparse_xyz_mapping = torch.zeros_like(xyz_mapping)
-        num_samples = 40960
-        if num_samples > 0:
-            row_indices = torch.randint(0, xyz_mapping.shape[1], (num_samples,))
-            col_indices = torch.randint(0, xyz_mapping.shape[2], (num_samples,))
-            sparse_xyz_mapping[:, row_indices, col_indices] = xyz_mapping[:, row_indices, col_indices]
-            
-        return img, sparse_xyz_mapping, target
+        return img, target
 
     def load_item(self, idx):
         image, target = super(CocoDetection, self).__getitem__(idx)
         image_id = self.ids[idx]
-        file_name = self.coco.dataset['images'][idx]['file_name']
-        xyz_path = osp.join(self.xyz_folder, file_name.replace('.png', '.npz'))
-        xyz_mapping = np.load(xyz_path)['xyz_mapping']
 
         target = {'image_id': image_id, 'annotations': target}
 
         if self.remap_mscoco_category:
             image, target = self.prepare(image, target, category2label=mscoco_category2label)
-            # image, target = self.prepare(image, target, category2label=self.category2label)
         else:
             image, target = self.prepare(image, target)
 
@@ -81,7 +65,7 @@ class CocoDetection(torchvision.datasets.CocoDetection, DetDataset):
         if 'masks' in target:
             target['masks'] = convert_to_tv_tensor(target['masks'], key='masks')
         
-        return image, target, xyz_mapping
+        return image, target
 
     def extra_repr(self) -> str:
         s = f' img_folder: {self.img_folder}\n ann_file: {self.ann_file}\n'
@@ -169,7 +153,7 @@ class ConvertCocoPolysToMask(object):
 
         # Extract quads if present
         custom_coords2d = None
-        if anno and "coords2d" in anno[0]: # Check if normal data exists
+        if anno and "coords2d" in anno[0]: # Check if coords2d data exists
             custom_coords2d = [obj["coords2d"] for obj in anno]
             custom_coords2d = torch.as_tensor(custom_coords2d, dtype=torch.float32).reshape(-1, 4, 2)
             custom_coords2d[:, :, 0] /= w
