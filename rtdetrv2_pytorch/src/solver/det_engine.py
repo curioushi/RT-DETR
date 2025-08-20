@@ -138,6 +138,10 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
     header = 'Test:'
     writer = kwargs.get('writer', None)
     
+    # Initialize 4x4 grid for visualization
+    grid_images = []
+    target_image_ids = [0, 1, 2, 3, 4, 5, 6, 7]
+
     for samples, targets in metric_logger.log_every(data_loader, 10, header):
         samples = samples.to(device)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
@@ -159,100 +163,111 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
         
         results = postprocessor(outputs, orig_target_sizes)
 
-        # if 'segm' in postprocessor.keys():
-        #     target_sizes = torch.stack([t["size"] for t in targets], dim=0)
-        #     results = postprocessor['segm'](results, outputs, orig_target_sizes, target_sizes)
-
         res = {target['image_id'].item(): output for target, output in zip(targets, results)}
+        
         for sample, target, output in zip(samples, targets, results):
-            if target['image_id'].item() == 4:
-                # 1. Convert sample to OpenCV format (H, W, C), BGR, 0-255
-                img_tensor_cpu = sample.cpu().detach() # Should be (C, H, W) and range [0,1]
-                img_numpy_chw = img_tensor_cpu.numpy()
-                # Transpose C, H, W to H, W, C
-                img_numpy_hwc_rgb = np.transpose(img_numpy_chw, (1, 2, 0))
+            image_id_val = target['image_id'].item()
+            if image_id_val not in target_image_ids:
+                continue
                 
-                # Scale 0-1 to 0-255 and clip for safety
-                # Ensure the image is contiguous in memory after transpose for cvtColor
-                img_numpy_hwc_rgb_contiguous = np.ascontiguousarray(img_numpy_hwc_rgb)
-                img_to_save = (np.clip(img_numpy_hwc_rgb_contiguous, 0, 1) * 255).astype(np.uint8)
-                
-                # Convert RGB to BGR for OpenCV
-                img_bgr = cv2.cvtColor(img_to_save, cv2.COLOR_RGB2BGR)
+            # 1. Convert sample to OpenCV format (H, W, C), BGR, 0-255
+            img_tensor_cpu = sample.cpu().detach() # Should be (C, H, W) and range [0,1]
+            img_numpy_chw = img_tensor_cpu.numpy()
+            # Transpose C, H, W to H, W, C
+            img_numpy_hwc_rgb = np.transpose(img_numpy_chw, (1, 2, 0))
+            
+            # Scale 0-1 to 0-255 and clip for safety
+            # Ensure the image is contiguous in memory after transpose for cvtColor
+            img_numpy_hwc_rgb_contiguous = np.ascontiguousarray(img_numpy_hwc_rgb)
+            img_to_save = (np.clip(img_numpy_hwc_rgb_contiguous, 0, 1) * 255).astype(np.uint8)
+            
+            # Convert RGB to BGR for OpenCV
+            img_bgr = cv2.cvtColor(img_to_save, cv2.COLOR_RGB2BGR)
 
-                img_gt_vis = img_bgr.copy()
-                img_pred_vis = img_bgr.copy()
+            img_gt_vis = img_bgr.copy()
+            img_pred_vis = img_bgr.copy()
 
-                image_id_val = target['image_id'].item()
+            # 2. Draw Ground Truth boxes
+            gt_boxes_tensor = target['boxes_xyxy'] 
+            gt_labels_tensor = target['labels']
+            gt_quads_tensor = target['coords2d']
+            w, h = target['orig_size'].cpu().detach().numpy()
 
-                # 2. Draw Ground Truth boxes
-                gt_boxes_tensor = target['boxes_xyxy'] 
-                gt_labels_tensor = target['labels']
-                gt_quads_tensor = target['coords2d']
-                w, h = target['orig_size'].cpu().detach().numpy()
+            gt_boxes_np = gt_boxes_tensor.cpu().detach().numpy()
+            gt_labels_np = gt_labels_tensor.cpu().detach().numpy()
+            gt_quads_np = gt_quads_tensor.cpu().detach().numpy() * 640
 
-                gt_boxes_np = gt_boxes_tensor.cpu().detach().numpy()
-                gt_labels_np = gt_labels_tensor.cpu().detach().numpy()
-                gt_quads_np = gt_quads_tensor.cpu().detach().numpy() * 640
+            class_to_colors = {
+                0: (255, 0, 0),
+                1: (0, 255, 0),
+                2: (0, 0, 255),
+                3: (255, 255, 0),
+            }
+            class_to_colors.update({ i:(0, 0, 0) for i in range(4, 500)})
 
-                json_data = {}
-                json_data["ground_truth"] = {
-                    "quads": gt_quads_np.tolist(),
-                }
+            colored_mask = img_gt_vis.copy()
+            for i in range(gt_boxes_np.shape[0]):
+                label = gt_labels_np[i]
+                quads = gt_quads_np[i].reshape(4, 2)
+                cv2.polylines(img_gt_vis, [quads.astype(np.int32)], True, class_to_colors[label], 2)
 
-                class_to_colors = {
-                    0: (255, 0, 0),
-                    1: (0, 255, 0),
-                    2: (0, 0, 255),
-                    3: (255, 255, 0),
-                }
-                class_to_colors.update({ i:(0, 0, 0) for i in range(4, 500)})
+            img_gt_vis = cv2.addWeighted(img_gt_vis, 0.8, colored_mask, 0.2, 0)
 
-                colored_mask = img_gt_vis.copy()
-                for i in range(gt_boxes_np.shape[0]):
-                    label = gt_labels_np[i]
-                    quads = gt_quads_np[i].reshape(4, 2)
-                    cv2.polylines(img_gt_vis, [quads.astype(np.int32)], True, class_to_colors[label], 1)
+            # 3. Draw Prediction boxes (score > 0.6)
+            pred_boxes_tensor = output['boxes']
+            pred_scores_tensor = output['scores']
+            pred_labels_tensor = output['labels']
+            pred_quads_tensor = output['quads']
 
-                img_gt_vis = cv2.addWeighted(img_gt_vis, 0.8, colored_mask, 0.2, 0)
+            pred_boxes_np = pred_boxes_tensor.cpu().detach().numpy() / 1024 * 640
+            pred_scores_np = pred_scores_tensor.cpu().detach().numpy()
+            pred_labels_np = pred_labels_tensor.cpu().detach().numpy()
+            pred_quads_np = pred_quads_tensor.cpu().detach().numpy() * 640
 
-                filename_gt = os.path.join(output_dir, f"image_{image_id_val}_gt.png")
-                cv2.imwrite(filename_gt, img_gt_vis)
+            score_thresh = 0.6
+            colored_mask = img_pred_vis.copy()
+            for i in range(pred_boxes_np.shape[0]):
+                if pred_scores_np[i] > score_thresh:
+                    label = pred_labels_np[i]
+                    quads = pred_quads_np[i].reshape(4, 2)
+                    cv2.polylines(img_pred_vis, [quads.astype(np.int32)], True, class_to_colors[label], 2)
 
-                # 3. Draw Prediction boxes (score > 0.6)
-                pred_boxes_tensor = output['boxes']
-                pred_scores_tensor = output['scores']
-                pred_labels_tensor = output['labels']
-                pred_quads_tensor = output['quads']
+            img_pred_vis = cv2.addWeighted(img_pred_vis, 0.8, colored_mask, 0.2, 0)
 
-                pred_boxes_np = pred_boxes_tensor.cpu().detach().numpy() / 1024 * 640
-                pred_scores_np = pred_scores_tensor.cpu().detach().numpy()
-                pred_labels_np = pred_labels_tensor.cpu().detach().numpy()
-                pred_quads_np = pred_quads_tensor.cpu().detach().numpy() * 640
-
-                json_data["predictions"] = {
-                    "scores": pred_scores_np.tolist(),
-                    "quads": pred_quads_np.tolist(),
-                }
-
-                score_thresh = 0.6
-                colored_mask = img_pred_vis.copy()
-                for i in range(pred_boxes_np.shape[0]):
-                    if pred_scores_np[i] > score_thresh:
-                        label = pred_labels_np[i]
-                        quads = pred_quads_np[i].reshape(4, 2)
-                        cv2.polylines(img_pred_vis, [quads.astype(np.int32)], True, class_to_colors[label], 1)
-
-                img_pred_vis = cv2.addWeighted(img_pred_vis, 0.8, colored_mask, 0.2, 0)
-
-                with open(os.path.join(output_dir, f"predictions_{image_id_val}_{epoch}.json"), "w") as f:
-                    json.dump(json_data, f)
-
-                filename_pred_box = os.path.join(output_dir, f"image_{image_id_val}_pred_{epoch}.png")
-                cv2.imwrite(filename_pred_box, img_pred_vis)
-                cv2.imwrite(os.path.join(output_dir, "latest.png"), img_pred_vis)
+            # Store images for grid
+            grid_images.append((image_id_val, img_gt_vis, img_pred_vis))
+        
         if coco_evaluator is not None:
             coco_evaluator.update(res)
+
+    # Create 4x4 grid
+    if grid_images:
+        # Sort by image_id to ensure correct order
+        grid_images.sort(key=lambda x: x[0])
+        
+        # Get image dimensions
+        img_height, img_width = grid_images[0][1].shape[:2]
+        
+        # Create 4x4 grid
+        grid_rows = 4
+        grid_cols = 4
+        grid_img = np.zeros((img_height * grid_rows, img_width * grid_cols, 3), dtype=np.uint8)
+        
+        # Fill grid: first row: gt_0, pred_0, gt_1, pred_1, etc.
+        for idx, (image_id, gt_img, pred_img) in enumerate(grid_images):
+            row = idx // 2  # 0, 0, 1, 1, 2, 2, 3, 3
+            col = (idx % 2) * 2 + (image_id % 2)  # 0, 1, 2, 3 for each row
+            
+            if image_id % 2 == 0:  # Even image_id: gt goes to col 0, pred goes to col 1
+                grid_img[row*img_height:(row+1)*img_height, 0*img_width:1*img_width] = gt_img
+                grid_img[row*img_height:(row+1)*img_height, 1*img_width:2*img_width] = pred_img
+            else:  # Odd image_id: gt goes to col 2, pred goes to col 3
+                grid_img[row*img_height:(row+1)*img_height, 2*img_width:3*img_width] = gt_img
+                grid_img[row*img_height:(row+1)*img_height, 3*img_width:4*img_width] = pred_img
+        
+        # Save grid image
+        cv2.imwrite(os.path.join(output_dir, f"validate_{epoch:04}.png"), grid_img)
+        cv2.imwrite(os.path.join(output_dir, "latest.png"), grid_img)
 
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()

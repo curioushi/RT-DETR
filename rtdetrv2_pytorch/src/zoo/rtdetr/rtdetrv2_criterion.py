@@ -122,30 +122,19 @@ class RTDETRCriterionv2(nn.Module):
         target_quads = torch.cat([t['coords2d'][i] for t, (_, i) in zip(targets, indices)], dim=0)
 
         losses = {}
-        loss_quads2d = F.l1_loss(src_quads, target_quads, reduction='none')
-
-        # src_weights = outputs['pred_weights'][idx]
-        # target_weights_list = []
-        # for t, (_, i) in zip(targets, indices):
-        #     if 'weights' not in t:
-        #         raise ValueError("Target weights not found in one or more targets.")
-        #     if i.numel() > 0: # only gather if there are matched indices for this target
-        #         target_weights_list.append(t['weights'][i])
-        # if not target_weights_list:
-        #     loss_weights = torch.zeros(1, device=src_weights.device, requires_grad=True)[0]
-        #     loss_length_consistency = torch.zeros(1, device=src_weights.device, requires_grad=True)[0]
-        # else:
-        #     target_weights = torch.cat(target_weights_list, dim=0)
-        #     assert src_weights.shape[0] == target_weights.shape[0], 'src_weights and target_weights shape mismatch'
-
-        #     loss_weights = F.l1_loss(src_weights, target_weights, reduction='none')
-        #     loss_length_consistency = self.loss_consistency_per_quad(outputs, targets, indices)
-        #     mask_good_quads = (loss_weights.mean(axis=-1) < 0.1) & (loss_quads.max(axis=-1)[0] < 0.01)
-        #     loss_length_consistency = (loss_length_consistency * mask_good_quads).sum() / (mask_good_quads.sum() + 1e-7)
+        
+        # Calculate 4 L1 losses with different rotations of target_quads
+        loss_quads2d_list = []
+        for i in range(4):
+            # Rotate target_quads by shifting 2 positions each time
+            rotated_target = torch.roll(target_quads, shifts=i*2, dims=1)
+            loss = F.l1_loss(src_quads, rotated_target, reduction='none').sum(dim=-1)
+            loss_quads2d_list.append(loss)
+        
+        # Take the minimum of all 4 losses
+        loss_quads2d = torch.stack(loss_quads2d_list, dim=0).min(dim=0)[0]
 
         losses['loss_quads2d'] = loss_quads2d.sum() / num_boxes
-        # losses['loss_weights'] = loss_weights.sum() / num_boxes
-        # losses['loss_length_consistency'] = loss_length_consistency
 
         return losses
     
