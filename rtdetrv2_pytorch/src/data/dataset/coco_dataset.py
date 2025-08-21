@@ -25,6 +25,65 @@ from ...core import register
 
 __all__ = ['CocoDetection']
 
+def gaussian_kernel(height, width, center_y, center_x, sigma=1):
+    diff_y = (np.arange(height).astype(np.float32) - center_y) ** 2
+    diff_x = (np.arange(width).astype(np.float32) - center_x) ** 2
+    diff_xy = diff_y[:, None] + diff_x[None, :]
+    kernel = np.exp(-diff_xy / (2 * sigma ** 2))
+    return kernel
+
+def build_centernet_target(img, target):
+    _, h, w = img.shape
+    assert h % 8 == 0 and w % 8 == 0
+    h2, w2 = h // 8, w // 8
+    num_boxes = len(target["labels"])
+    masks = np.zeros((num_boxes, h2, w2), dtype=np.float32)
+    offsets = np.zeros((num_boxes, 2, h2, w2), dtype=np.float32)
+    for i, coords2d in enumerate(target["coords2d"]):
+        coords2d_full = coords2d.reshape(-1, 2).numpy()
+        coords2d_full[:, 0] *= w
+        coords2d_full[:, 1] *= h
+        coords2d_down = coords2d_full / 8
+        coords2d_down_int = coords2d_down.astype(int)
+        coords2d_down_offset = coords2d_down - coords2d_down_int
+
+        for ((x_idx, y_idx), (x_offset, y_offset)) in zip(coords2d_down_int, coords2d_down_offset):
+            y_idx_min = max(0, y_idx - 2)
+            y_idx_max = min(h2, y_idx + 3)
+            x_idx_min = max(0, x_idx - 2)
+            x_idx_max = min(w2, x_idx + 3)
+            masks[i, y_idx_min:y_idx_max, x_idx_min:x_idx_max] = gaussian_kernel(
+                                                                    y_idx_max - y_idx_min, 
+                                                                    x_idx_max - x_idx_min, 
+                                                                    y_idx - y_idx_min,
+                                                                    x_idx - x_idx_min,
+                                                                    1.0
+                                                                )
+            offsets[i, 0, y_idx_min:y_idx_max, x_idx_min:x_idx_max] = (x_offset - (np.array(range(x_idx_min, x_idx_max)) - x_idx))[None, :]
+            offsets[i, 1, y_idx_min:y_idx_max, x_idx_min:x_idx_max] = (y_offset - (np.array(range(y_idx_min, y_idx_max)) - y_idx))[:, None]
+
+    # img = img.numpy()
+    # img = img.transpose(1, 2, 0)
+    # img = (img * 255).astype(np.uint8)
+    # img = Image.fromarray(img)
+    # img.save(f"test_img.png")
+
+    # for i, m in enumerate(mask):
+    #     img = Image.fromarray(m * 255).convert("L")
+    #     img.save(f"test_mask_{i}.png")
+    
+    # for i, o in enumerate(offset):
+    #     o_uint16 = (o * 65535).astype(np.uint16)
+    #     img = Image.fromarray(o_uint16[0])
+    #     img.save(f"test_offset_{i}.png")
+
+    masks = torch.from_numpy(masks)
+    offsets = torch.from_numpy(offsets)
+
+    target['masks'] = masks
+    target['offsets'] = offsets
+
+
 
 @register()
 class CocoDetection(torchvision.datasets.CocoDetection, DetDataset):
@@ -44,6 +103,7 @@ class CocoDetection(torchvision.datasets.CocoDetection, DetDataset):
         img, target = self.load_item(idx)
         if self._transforms is not None:
             img, target, _ = self._transforms(img, target, self)
+        build_centernet_target(img, target)
         return img, target
 
     def load_item(self, idx):

@@ -191,12 +191,15 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
             gt_boxes_tensor = target['boxes_xyxy'] 
             gt_labels_tensor = target['labels']
             gt_quads_tensor = target['coords2d']
+            gt_masks_tensor = target['masks']
+            gt_masks_tensor = F.interpolate(gt_masks_tensor.unsqueeze(1), size=(640, 640), mode='bilinear', align_corners=False).squeeze(1)
             w, h = target['orig_size'].cpu().detach().numpy()
 
             gt_boxes_np = gt_boxes_tensor.cpu().detach().numpy()
             gt_labels_np = gt_labels_tensor.cpu().detach().numpy()
             gt_quads_np = gt_quads_tensor.cpu().detach().numpy() * 640
-
+            gt_masks_np = gt_masks_tensor.cpu().detach().numpy()
+            
             class_to_colors = {
                 0: (255, 0, 0),
                 1: (0, 255, 0),
@@ -205,34 +208,49 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
             }
             class_to_colors.update({ i:(0, 0, 0) for i in range(4, 500)})
 
-            colored_mask = img_gt_vis.copy()
             for i in range(gt_boxes_np.shape[0]):
                 label = gt_labels_np[i]
-                quads = gt_quads_np[i].reshape(4, 2)
-                cv2.polylines(img_gt_vis, [quads.astype(np.int32)], True, class_to_colors[label], 2)
-
-            img_gt_vis = cv2.addWeighted(img_gt_vis, 0.8, colored_mask, 0.2, 0)
+                # quads = gt_quads_np[i].reshape(4, 2)
+                # cv2.polylines(img_gt_vis, [quads.astype(np.int32)], True, class_to_colors[label], 2)
+                valid_mask = gt_masks_np[i] > 0
+                alpha_mask = gt_masks_np[i][valid_mask][:, None]
+                img_gt_vis[valid_mask] = img_gt_vis[valid_mask] * (1 - alpha_mask) + \
+                   (np.array(class_to_colors[label])[None, :] * alpha_mask)
 
             # 3. Draw Prediction boxes (score > 0.6)
             pred_boxes_tensor = output['boxes']
             pred_scores_tensor = output['scores']
             pred_labels_tensor = output['labels']
             pred_quads_tensor = output['quads']
+            pred_masks_tensor = F.sigmoid(output['masks'])
+            pred_masks_tensor_max_pool = F.max_pool2d(pred_masks_tensor.unsqueeze(1), kernel_size=3, padding=1, stride=1).squeeze(1)
+            pred_masks_peak = pred_masks_tensor * (pred_masks_tensor == pred_masks_tensor_max_pool).float()
+            pred_masks_tensor = F.interpolate(pred_masks_tensor.unsqueeze(1), size=(640, 640), mode='bilinear', align_corners=False).squeeze(1)
+
 
             pred_boxes_np = pred_boxes_tensor.cpu().detach().numpy() / 1024 * 640
             pred_scores_np = pred_scores_tensor.cpu().detach().numpy()
             pred_labels_np = pred_labels_tensor.cpu().detach().numpy()
             pred_quads_np = pred_quads_tensor.cpu().detach().numpy() * 640
+            pred_masks_np = pred_masks_tensor.cpu().detach().numpy()
+            pred_masks_peak_np = pred_masks_peak.cpu().detach().numpy()
 
-            score_thresh = 0.6
-            colored_mask = img_pred_vis.copy()
+            score_thresh = 0.5
             for i in range(pred_boxes_np.shape[0]):
                 if pred_scores_np[i] > score_thresh:
                     label = pred_labels_np[i]
-                    quads = pred_quads_np[i].reshape(4, 2)
-                    cv2.polylines(img_pred_vis, [quads.astype(np.int32)], True, class_to_colors[label], 2)
-
-            img_pred_vis = cv2.addWeighted(img_pred_vis, 0.8, colored_mask, 0.2, 0)
+                    # quads = pred_quads_np[i].reshape(4, 2)
+                    # cv2.polylines(img_pred_vis, [quads.astype(np.int32)], True, class_to_colors[label], 2)
+                    ys, xs = np.where(pred_masks_peak_np[i] > 0.5)
+                    if len(xs) == 4:
+                        quads = np.stack([xs, ys], axis=1) * 8
+                        quads = np.array(fix_points_order(quads.tolist(), label))
+                        cv2.polylines(img_pred_vis, [quads.astype(np.int32)], True, class_to_colors[label], 1)
+                    
+                    valid_mask = pred_masks_np[i] > 0
+                    alpha_mask = pred_masks_np[i][valid_mask][:, None]
+                    img_pred_vis[valid_mask] = img_pred_vis[valid_mask] * (1 - alpha_mask) + \
+                       (np.array(class_to_colors[label])[None, :] * alpha_mask)
 
             # Store images for grid
             grid_images.append((image_id_val, img_gt_vis, img_pred_vis))
@@ -291,4 +309,52 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
     return stats, coco_evaluator
 
 
+def fix_points_order(points: list[tuple[int, int]], label: int) -> list[tuple[int, int]]:
+    """Fix points order based on label"""
+    order = None
+    if label in [0, 1, 2]:
+        xs, ys = [p[0] for p in points], [p[1] for p in points]
+        sorted_idx_x = np.argsort(xs)
+        if ys[sorted_idx_x[0]] < ys[sorted_idx_x[1]]:
+            left_top_idx = sorted_idx_x[0]
+            left_bottom_idx = sorted_idx_x[1]
+        else:
+            left_top_idx = sorted_idx_x[1]
+            left_bottom_idx = sorted_idx_x[0]
+        if ys[sorted_idx_x[2]] < ys[sorted_idx_x[3]]:
+            right_top_idx = sorted_idx_x[2]
+            right_bottom_idx = sorted_idx_x[3]
+        else:
+            right_top_idx = sorted_idx_x[3]
+            right_bottom_idx = sorted_idx_x[2]
+        order = [left_top_idx, left_bottom_idx, right_bottom_idx, right_top_idx]
+    elif label == 3:
+        xs, ys = [p[0] for p in points], [p[1] for p in points]
+        sorted_idx_x = np.argsort(xs)
+        sorted_idx_y = np.argsort(ys)
+        if xs[sorted_idx_y[0]] < xs[sorted_idx_y[3]]:
+            p0_idx = sorted_idx_y[0]
+            p2_idx = sorted_idx_y[3]
+            if xs[sorted_idx_y[1]] < xs[sorted_idx_y[2]]:
+                p1_idx = sorted_idx_y[1]
+                p3_idx = sorted_idx_y[2]
+            else:
+                p1_idx = sorted_idx_y[2]
+                p3_idx = sorted_idx_y[1]
+            order = [p0_idx, p1_idx, p2_idx, p3_idx]
+        else:
+            p1_idx = sorted_idx_y[3]
+            p3_idx = sorted_idx_y[0]
+            if xs[sorted_idx_y[1]] < xs[sorted_idx_y[2]]:
+                p0_idx = sorted_idx_y[1]
+                p2_idx = sorted_idx_y[2]
+            else:
+                p0_idx = sorted_idx_y[2]
+                p2_idx = sorted_idx_y[1]
+            order = [p0_idx, p1_idx, p2_idx, p3_idx]
+    else:
+        raise ValueError(f"Invalid label: {label}")
+
+    points = [points[i] for i in order]
+    return points
 

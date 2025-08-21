@@ -20,7 +20,7 @@
             "console": "integratedTerminal",
             "args": [
                 "-c",
-                "configs/rtdetrv2/rtdetrv2_r34vd_120e_coco.yml"
+                "configs/rtdetrv2/rtdetrv2_r18vd_120e_coco.yml"
             ],
             "env": {
                 "CUDA_VISIBLE_DEVICES": "0"
@@ -35,9 +35,9 @@
             "console": "integratedTerminal",
             "args": [
                 "-c",
-                "configs/rtdetrv2/rtdetrv2_r34vd_120e_coco.yml",
+                "configs/rtdetrv2/rtdetrv2_r18vd_120e_coco.yml",
                 "-r",
-                "output/0820_replicate_quad_4/best.pth",
+                "output/0821_replicate_quad_1/best.pth",
                 "-d",
                 "cuda",
                 "--im-dir",
