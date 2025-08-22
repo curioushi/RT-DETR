@@ -20,6 +20,55 @@ from PIL import Image, ImageDraw
 from src.core import YAMLConfig
 
 
+def fix_points_order(points: list[tuple[int, int]], label: int) -> list[tuple[int, int]]:
+    """Fix points order based on label"""
+    order = None
+    if label in [0, 1, 2]:
+        xs, ys = [p[0] for p in points], [p[1] for p in points]
+        sorted_idx_x = np.argsort(xs)
+        if ys[sorted_idx_x[0]] < ys[sorted_idx_x[1]]:
+            left_top_idx = sorted_idx_x[0]
+            left_bottom_idx = sorted_idx_x[1]
+        else:
+            left_top_idx = sorted_idx_x[1]
+            left_bottom_idx = sorted_idx_x[0]
+        if ys[sorted_idx_x[2]] < ys[sorted_idx_x[3]]:
+            right_top_idx = sorted_idx_x[2]
+            right_bottom_idx = sorted_idx_x[3]
+        else:
+            right_top_idx = sorted_idx_x[3]
+            right_bottom_idx = sorted_idx_x[2]
+        order = [left_top_idx, left_bottom_idx, right_bottom_idx, right_top_idx]
+    elif label == 3:
+        xs, ys = [p[0] for p in points], [p[1] for p in points]
+        sorted_idx_x = np.argsort(xs)
+        sorted_idx_y = np.argsort(ys)
+        if xs[sorted_idx_y[0]] < xs[sorted_idx_y[3]]:
+            p0_idx = sorted_idx_y[0]
+            p2_idx = sorted_idx_y[3]
+            if xs[sorted_idx_y[1]] < xs[sorted_idx_y[2]]:
+                p1_idx = sorted_idx_y[1]
+                p3_idx = sorted_idx_y[2]
+            else:
+                p1_idx = sorted_idx_y[2]
+                p3_idx = sorted_idx_y[1]
+            order = [p0_idx, p1_idx, p2_idx, p3_idx]
+        else:
+            p1_idx = sorted_idx_y[3]
+            p3_idx = sorted_idx_y[0]
+            if xs[sorted_idx_y[1]] < xs[sorted_idx_y[2]]:
+                p0_idx = sorted_idx_y[1]
+                p2_idx = sorted_idx_y[2]
+            else:
+                p0_idx = sorted_idx_y[2]
+                p2_idx = sorted_idx_y[1]
+            order = [p0_idx, p1_idx, p2_idx, p3_idx]
+    else:
+        raise ValueError(f"Invalid label: {label}")
+
+    points = [points[i] for i in order]
+    return points
+
 def main(args):
     """main
     """
@@ -69,20 +118,26 @@ def main(args):
 
         with torch.no_grad():
             output = model(sample, orig_size)
-        labels, boxes, scores, quads = output
-        boxes = boxes.squeeze(0).cpu().numpy()
-        labels = labels.squeeze(0).cpu().numpy()
-        scores = scores.squeeze(0).cpu().numpy()
-        quads = quads.squeeze(0).cpu().numpy()
 
-        indices = scores > 0.6
-        boxes = boxes[indices]
-        labels = labels[indices]
-        scores = scores[indices]
-        quads = quads[indices]
-        quads = quads.reshape(-1, 4, 2)
-        quads[:, :, 0] *= w
-        quads[:, :, 1] *= h
+        labels, boxes, scores, quads, masks, offsets = output
+        labels = labels[0]
+        boxes = boxes[0]
+        scores = scores[0]
+        quads = quads[0]
+        masks = masks[0]
+        offsets = offsets[0]
+
+        masks = F.sigmoid(masks)
+        masks_max_pool = F.max_pool2d(masks.unsqueeze(1), kernel_size=5, padding=2, stride=1).squeeze(1)
+        masks_peak = masks * (masks == masks_max_pool).float()
+
+        boxes = boxes.cpu().numpy()
+        labels = labels.cpu().numpy()
+        scores = scores.cpu().numpy()
+        quads = quads.cpu().numpy()
+        masks = masks.cpu().numpy()
+        masks_peak = masks_peak.cpu().numpy()
+        offsets = offsets.cpu().numpy()
 
         class_to_colors = {
             0: (255, 0, 0),
@@ -92,8 +147,23 @@ def main(args):
         }
 
         viz_img = np.array(im_pil)
-        for label, quad, in zip(labels, quads):
-            cv2.polylines(viz_img, [quad.astype(np.int32)], True, class_to_colors[label], 2)
+
+        top3_indices = np.argsort(scores)[-3:]
+        for i in top3_indices:
+            label = labels[i]
+            # Find the four points with maximum values in pred_masks_peak_np
+            mask_flat = masks_peak[i].flatten()
+            top_4_indices = np.argsort(mask_flat)[-4:]
+            ys, xs = np.unravel_index(top_4_indices, masks_peak[i].shape)
+            if len(xs) == 4:
+                x_offsets = offsets[i, 0, ys, xs]
+                y_offsets = offsets[i, 1, ys, xs]
+                quads = np.stack([xs + x_offsets, ys + y_offsets], axis=1) * 8
+                quads[:, 0] *= w / 640
+                quads[:, 1] *= h / 640
+                quads = np.array(fix_points_order(quads.tolist(), label))
+                cv2.polylines(viz_img, [quads.astype(np.int32)], True, class_to_colors[label], 2)
+            
 
         cv2.imwrite(f"output/predict/{os.path.basename(im_file)}", viz_img)
 

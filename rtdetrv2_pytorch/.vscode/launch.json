@@ -39,7 +39,7 @@
                 "-c",
                 "configs/rtdetrv2/rtdetrv2_r18vd_120e_coco.yml",
                 "-r",
-                "output/0821_replicate_quad_1/best.pth",
+                "output/0822_replicate_quad_2/checkpoint0044.pth",
                 "-d",
                 "cuda",
                 "--im-dir",
