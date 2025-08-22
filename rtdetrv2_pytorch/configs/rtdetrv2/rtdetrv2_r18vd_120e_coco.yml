@@ -7,7 +7,7 @@ __include__: [
 ]
 
 
-output_dir: ./output/0821_replicate_quad_1
+output_dir: ./output/0822_replicate_quad_2
 
 
 PResNet:

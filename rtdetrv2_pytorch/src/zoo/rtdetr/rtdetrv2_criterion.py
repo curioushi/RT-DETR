@@ -249,11 +249,14 @@ class RTDETRCriterionv2(nn.Module):
         return {'loss_mask_bce': loss_mask_bce.mean(axis=1).sum() / num_boxes,
                 'loss_mask_dice': loss_mask_dice.sum() / num_boxes}
     
-    def loss_mask_centernet(self, outputs, targets, indices, num_boxes, **kwargs):
+    def loss_centernet(self, outputs, targets, indices, num_boxes, **kwargs):
         assert 'pred_masks' in outputs
+        assert 'pred_offsets' in outputs
         idx = self._get_src_permutation_idx(indices)
         src_masks = outputs['pred_masks'][idx]
+        src_offsets = outputs['pred_offsets'][idx]
         target_masks = torch.cat([t['masks'][i] for t, (_, i) in zip(targets, indices)], dim=0)
+        target_offsets = torch.cat([t['offsets'][i] for t, (_, i) in zip(targets, indices)], dim=0)
         h, w = target_masks.shape[1:]
 
         # 概率
@@ -267,18 +270,25 @@ class RTDETRCriterionv2(nn.Module):
         eps = 1e-7
         alpha = 2.0
         beta = 4.0
-        pos_loss = -torch.log(p.clamp(min=eps)) * ((1 - p) ** alpha) * pos_mask
+        pos_loss = -F.logsigmoid(src_masks) * ((1 - p) ** alpha) * pos_mask
 
         # ----- 负样本项： - (1 - Y)^beta * (p^alpha) * log(1 - p)
         neg_weight = (1 - target_masks) ** beta
-        neg_loss = -torch.log((1 - p).clamp(min=eps)) * (p ** alpha) * neg_weight * neg_mask
+        neg_loss = -F.logsigmoid(-src_masks) * (p ** alpha) * neg_weight * neg_mask
 
         # 按正样本数归一化（与论文一致）；若无正样本，则用1避免除零
         num_pos = pos_mask.sum() + eps
 
-        loss = (pos_loss.sum() + neg_loss.sum()) / num_pos
-        return {'loss_mask_centernet': loss}
-            
+        loss_mask_centernet = (pos_loss.sum() + neg_loss.sum()) / num_pos
+
+        # TODO: 尝试 target_masks > 0
+        loss_offset_centernet = F.l1_loss(src_offsets, target_offsets, reduction='none') * pos_mask.unsqueeze(1)
+        loss_offset_centernet = loss_offset_centernet.sum() / num_pos
+
+        return {'loss_mask_centernet': loss_mask_centernet,
+                'loss_offset_centernet': loss_offset_centernet}
+    
+    
     def loss_depth(self, outputs, targets, indices, num_boxes, **kwargs):
         assert 'pred_depths' in outputs
         if len(targets) > 0: 
@@ -353,7 +363,7 @@ class RTDETRCriterionv2(nn.Module):
             'vfl': self.loss_labels_vfl,
             'quads2d': self.loss_quads2d,
             'masks': self.loss_masks,
-            'mask_centernet': self.loss_mask_centernet,
+            'centernet': self.loss_centernet,
             'depth': self.loss_depth,
             'quads3d': self.loss_quads3d,
             'planes': self.loss_planes,
@@ -396,7 +406,7 @@ class RTDETRCriterionv2(nn.Module):
                     matched = self.matcher(aux_outputs, targets)
                     indices = matched['indices']
                 for loss in self.losses:
-                    if loss in ['masks', 'depth', 'quads3d', 'planes', 'mask_centernet']:
+                    if loss in ['masks', 'depth', 'quads3d', 'planes', 'centernet']:
                         continue
                     meta = self.get_loss_meta_info(loss, aux_outputs, targets, indices)
                     l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_boxes, **meta)
@@ -411,7 +421,7 @@ class RTDETRCriterionv2(nn.Module):
             dn_num_boxes = num_boxes * outputs['dn_meta']['dn_num_group']
             for i, aux_outputs in enumerate(outputs['dn_aux_outputs']):
                 for loss in self.losses:
-                    if loss in ['masks', 'depth', 'quads2d', 'quads3d', 'planes', 'mask_centernet']:
+                    if loss in ['masks', 'depth', 'quads2d', 'quads3d', 'planes', 'centernet']:
                         continue
                     meta = self.get_loss_meta_info(loss, aux_outputs, targets, indices)
                     l_dict = self.get_loss(loss, aux_outputs, targets, indices, dn_num_boxes, **meta)
@@ -436,7 +446,7 @@ class RTDETRCriterionv2(nn.Module):
                 matched = self.matcher(aux_outputs, targets)
                 indices = matched['indices']
                 for loss in self.losses:
-                    if loss in ['masks', 'depth', 'quads2d', 'quads3d', 'planes', 'mask_centernet']:
+                    if loss in ['masks', 'depth', 'quads2d', 'quads3d', 'planes', 'centernet']:
                         continue
                     meta = self.get_loss_meta_info(loss, aux_outputs, enc_targets, indices)
                     l_dict = self.get_loss(loss, aux_outputs, enc_targets, indices, num_boxes, **meta)

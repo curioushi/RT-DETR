@@ -192,6 +192,9 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
             gt_labels_tensor = target['labels']
             gt_quads_tensor = target['coords2d']
             gt_masks_tensor = target['masks']
+            gt_offsets_tensor = target['offsets']
+            gt_masks_tensor_max_pool = F.max_pool2d(gt_masks_tensor.unsqueeze(1), kernel_size=5, padding=2, stride=1).squeeze(1)
+            gt_masks_peak = gt_masks_tensor * (gt_masks_tensor == gt_masks_tensor_max_pool).float()
             gt_masks_tensor = F.interpolate(gt_masks_tensor.unsqueeze(1), size=(640, 640), mode='bilinear', align_corners=False).squeeze(1)
             w, h = target['orig_size'].cpu().detach().numpy()
 
@@ -199,6 +202,8 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
             gt_labels_np = gt_labels_tensor.cpu().detach().numpy()
             gt_quads_np = gt_quads_tensor.cpu().detach().numpy() * 640
             gt_masks_np = gt_masks_tensor.cpu().detach().numpy()
+            gt_masks_peak_np = gt_masks_peak.cpu().detach().numpy()
+            gt_offsets_np = gt_offsets_tensor.cpu().detach().numpy()
             
             class_to_colors = {
                 0: (255, 0, 0),
@@ -210,8 +215,16 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
 
             for i in range(gt_boxes_np.shape[0]):
                 label = gt_labels_np[i]
-                # quads = gt_quads_np[i].reshape(4, 2)
-                # cv2.polylines(img_gt_vis, [quads.astype(np.int32)], True, class_to_colors[label], 2)
+                # Find the four points with maximum values in gt_masks_peak_np
+                mask_flat = gt_masks_peak_np[i].flatten()
+                top_4_indices = np.argsort(mask_flat)[-4:]
+                ys, xs = np.unravel_index(top_4_indices, gt_masks_peak_np[i].shape)
+                if len(xs) == 4:
+                    x_offsets = gt_offsets_np[i, 0, ys, xs]
+                    y_offsets = gt_offsets_np[i, 1, ys, xs]
+                    quads = np.stack([xs + x_offsets, ys + y_offsets], axis=1) * 8
+                    quads = np.array(fix_points_order(quads.tolist(), label))
+                    cv2.polylines(img_gt_vis, [quads.astype(np.int32)], True, class_to_colors[label], 2)
                 valid_mask = gt_masks_np[i] > 0
                 alpha_mask = gt_masks_np[i][valid_mask][:, None]
                 img_gt_vis[valid_mask] = img_gt_vis[valid_mask] * (1 - alpha_mask) + \
@@ -223,7 +236,8 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
             pred_labels_tensor = output['labels']
             pred_quads_tensor = output['quads']
             pred_masks_tensor = F.sigmoid(output['masks'])
-            pred_masks_tensor_max_pool = F.max_pool2d(pred_masks_tensor.unsqueeze(1), kernel_size=3, padding=1, stride=1).squeeze(1)
+            pred_offsets_tensor = output['offsets']
+            pred_masks_tensor_max_pool = F.max_pool2d(pred_masks_tensor.unsqueeze(1), kernel_size=5, padding=2, stride=1).squeeze(1)
             pred_masks_peak = pred_masks_tensor * (pred_masks_tensor == pred_masks_tensor_max_pool).float()
             pred_masks_tensor = F.interpolate(pred_masks_tensor.unsqueeze(1), size=(640, 640), mode='bilinear', align_corners=False).squeeze(1)
 
@@ -234,23 +248,26 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
             pred_quads_np = pred_quads_tensor.cpu().detach().numpy() * 640
             pred_masks_np = pred_masks_tensor.cpu().detach().numpy()
             pred_masks_peak_np = pred_masks_peak.cpu().detach().numpy()
+            pred_offsets_np = pred_offsets_tensor.cpu().detach().numpy()
 
-            score_thresh = 0.5
-            for i in range(pred_boxes_np.shape[0]):
-                if pred_scores_np[i] > score_thresh:
-                    label = pred_labels_np[i]
-                    # quads = pred_quads_np[i].reshape(4, 2)
-                    # cv2.polylines(img_pred_vis, [quads.astype(np.int32)], True, class_to_colors[label], 2)
-                    ys, xs = np.where(pred_masks_peak_np[i] > 0.5)
-                    if len(xs) == 4:
-                        quads = np.stack([xs, ys], axis=1) * 8
-                        quads = np.array(fix_points_order(quads.tolist(), label))
-                        cv2.polylines(img_pred_vis, [quads.astype(np.int32)], True, class_to_colors[label], 1)
-                    
-                    valid_mask = pred_masks_np[i] > 0
-                    alpha_mask = pred_masks_np[i][valid_mask][:, None]
-                    img_pred_vis[valid_mask] = img_pred_vis[valid_mask] * (1 - alpha_mask) + \
-                       (np.array(class_to_colors[label])[None, :] * alpha_mask)
+            top3_indices = np.argsort(pred_scores_np)[-3:]
+            for i in top3_indices:
+                label = pred_labels_np[i]
+                # Find the four points with maximum values in pred_masks_peak_np
+                mask_flat = pred_masks_peak_np[i].flatten()
+                top_4_indices = np.argsort(mask_flat)[-4:]
+                ys, xs = np.unravel_index(top_4_indices, pred_masks_peak_np[i].shape)
+                if len(xs) == 4:
+                    x_offsets = pred_offsets_np[i, 0, ys, xs]
+                    y_offsets = pred_offsets_np[i, 1, ys, xs]
+                    quads = np.stack([xs + x_offsets, ys + y_offsets], axis=1) * 8
+                    quads = np.array(fix_points_order(quads.tolist(), label))
+                    cv2.polylines(img_pred_vis, [quads.astype(np.int32)], True, class_to_colors[label], 2)
+                
+                valid_mask = pred_masks_np[i] > 0
+                alpha_mask = pred_masks_np[i][valid_mask][:, None]
+                img_pred_vis[valid_mask] = img_pred_vis[valid_mask] * (1 - alpha_mask) + \
+                    (np.array(class_to_colors[label])[None, :] * alpha_mask)
 
             # Store images for grid
             grid_images.append((image_id_val, img_gt_vis, img_pred_vis))

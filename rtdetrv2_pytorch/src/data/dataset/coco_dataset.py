@@ -57,7 +57,7 @@ def build_centernet_target(img, target):
                                                                     x_idx_max - x_idx_min, 
                                                                     y_idx - y_idx_min,
                                                                     x_idx - x_idx_min,
-                                                                    1.0
+                                                                    sigma=0.5
                                                                 )
             offsets[i, 0, y_idx_min:y_idx_max, x_idx_min:x_idx_max] = (x_offset - (np.array(range(x_idx_min, x_idx_max)) - x_idx))[None, :]
             offsets[i, 1, y_idx_min:y_idx_max, x_idx_min:x_idx_max] = (y_offset - (np.array(range(y_idx_min, y_idx_max)) - y_idx))[:, None]

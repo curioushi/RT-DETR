@@ -20,7 +20,9 @@
             "console": "integratedTerminal",
             "args": [
                 "-c",
-                "configs/rtdetrv2/rtdetrv2_r18vd_120e_coco.yml"
+                "configs/rtdetrv2/rtdetrv2_r18vd_120e_coco.yml",
+                "-t",
+                "pretrained_models/rtdetrv2_r18vd_120e_coco_rerun_48.1.pth",
             ],
             "env": {
                 "CUDA_VISIBLE_DEVICES": "0"

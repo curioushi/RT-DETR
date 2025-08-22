@@ -301,10 +301,14 @@ class TransformerDecoder(nn.Module):
                 memory,
                 memory_spatial_shapes,
                 mask_embedding,
+                offset_x_embedding,
+                offset_y_embedding,
                 bbox_head,
                 score_head,
                 quad_head,
                 mask_head,
+                offset_x_head,
+                offset_y_head,
                 query_pos_head,
                 attn_mask=None,
                 memory_mask=None):
@@ -367,8 +371,16 @@ class TransformerDecoder(nn.Module):
         mask_query = mask_head(output)
         dec_out_masks = torch.einsum('bqc,bchw->bqhw', mask_query, mask_embedding)
 
+        offset_x_query = offset_x_head(output)
+        dec_out_offsets_x = torch.einsum('bqc,bchw->bqhw', offset_x_query, offset_x_embedding)
+
+        offset_y_query = offset_y_head(output)
+        dec_out_offsets_y = torch.einsum('bqc,bchw->bqhw', offset_y_query, offset_y_embedding)
+
+        dec_out_offsets = torch.stack([dec_out_offsets_x, dec_out_offsets_y], dim=2)
+
         
-        return torch.stack(dec_out_bboxes), torch.stack(dec_out_logits), torch.stack(dec_out_quads), dec_out_masks
+        return torch.stack(dec_out_bboxes), torch.stack(dec_out_logits), torch.stack(dec_out_quads), dec_out_masks, dec_out_offsets
 
 
 @register()
@@ -484,6 +496,11 @@ class RTDETRTransformerv2(nn.Module):
         ])
         self.dec_mask_head = MLP(hidden_dim, hidden_dim, hidden_dim, 3)
         self.dec_mask_embed = MLP(hidden_dim, hidden_dim, hidden_dim, 3)
+        
+        self.dec_offset_x_head = MLP(hidden_dim, hidden_dim, hidden_dim, 3)
+        self.dec_offset_x_embed = MLP(hidden_dim, hidden_dim, hidden_dim, 3)
+        self.dec_offset_y_head = MLP(hidden_dim, hidden_dim, hidden_dim, 3)
+        self.dec_offset_y_embed = MLP(hidden_dim, hidden_dim, hidden_dim, 3)
 
         # init encoder output anchors and valid_mask
         if self.eval_spatial_size:
@@ -508,8 +525,13 @@ class RTDETRTransformerv2(nn.Module):
             init.constant_(_quad.layers[-1].weight, 0)
             init.constant_(_quad.layers[-1].bias, 0)
         
-        init.constant_(self.dec_mask_embed.layers[-1].weight, 0)
-        init.constant_(self.dec_mask_embed.layers[-1].bias, -1.0)
+        init.constant_(self.dec_mask_head.layers[-1].weight, 0)
+        init.constant_(self.dec_mask_head.layers[-1].bias, 0)
+
+        init.constant_(self.dec_offset_x_head.layers[-1].weight, 0)
+        init.constant_(self.dec_offset_x_head.layers[-1].bias, 0)
+        init.constant_(self.dec_offset_y_head.layers[-1].weight, 0)
+        init.constant_(self.dec_offset_y_head.layers[-1].bias, 0)
         
         init.xavier_uniform_(self.enc_output[0].weight)
         if self.learn_query_content:
@@ -723,6 +745,8 @@ class RTDETRTransformerv2(nn.Module):
         out_featmap = fpn_inner_outs[0]
 
         mask_embedding = self.dec_mask_embed(out_featmap.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+        offset_x_embedding = self.dec_offset_x_embed(out_featmap.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+        offset_y_embedding = self.dec_offset_y_embed(out_featmap.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
         
         # prepare denoising training
         if self.training and self.num_denoising > 0:
@@ -741,16 +765,20 @@ class RTDETRTransformerv2(nn.Module):
             self._get_decoder_input(memory, spatial_shapes, denoising_logits, denoising_bbox_unact)
 
         # decoder
-        out_bboxes, out_logits, out_quads, out_masks = self.decoder(
+        out_bboxes, out_logits, out_quads, out_masks, out_offsets = self.decoder(
             init_ref_contents,
             init_ref_points_unact,
             memory,
             spatial_shapes,
             mask_embedding,
+            offset_x_embedding,
+            offset_y_embedding,
             self.dec_bbox_head,
             self.dec_score_head,
             self.dec_quad_head,
             self.dec_mask_head,
+            self.dec_offset_x_head,
+            self.dec_offset_y_head,
             self.query_pos_head,
             attn_mask=attn_mask)
 
@@ -759,11 +787,13 @@ class RTDETRTransformerv2(nn.Module):
             dn_out_logits, out_logits = torch.split(out_logits, dn_meta['dn_num_split'], dim=2)
             dn_out_quads, out_quads = torch.split(out_quads, dn_meta['dn_num_split'], dim=2)
             dn_out_masks, out_masks = torch.split(out_masks, dn_meta['dn_num_split'], dim=1)
+            dn_out_offsets, out_offsets = torch.split(out_offsets, dn_meta['dn_num_split'], dim=1)
         
         out = {'pred_logits': out_logits[-1], 
                'pred_boxes': out_bboxes[-1], 
                'pred_quads': out_quads[-1],
                'pred_masks': out_masks,
+               'pred_offsets': out_offsets,
                }
 
         if self.training and self.aux_loss:
